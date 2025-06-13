@@ -1,0 +1,5 @@
+[env]
+PDFIUM_DYNAMIC_LIB_PATH = { value = "./lib", relative = true }
+
+[target.'cfg(target_os = "macos")']
+rustflags = []
