@@ -31,7 +31,7 @@ fn export_pdf_to_jpegs<T: AsRef<Path>>(
         .set_maximum_height(2000)
         .rotate_if_landscape(PdfPageRenderRotation::Degrees90, true);
 
-    for (index, page) in document.pages().iter().take(1).enumerate() {
+    for (index, page) in document.pages().iter().enumerate() {
         let output_path = images_dir.join(format!("test-page-{}.jpg", index));
 
         if let Ok(text) = page.text() {
@@ -49,8 +49,7 @@ fn export_pdf_to_jpegs<T: AsRef<Path>>(
 }
 
 pub fn main() {
-    let pdf_path =
-        "/home/isbest/Downloads/DocBank: A Benchmark Dataset for Document Layout Analysis.pdf";
+    let pdf_path = "/home/isbest/Downloads/Visual-RFT_ Visual Reinforcement Fine-Tuning.pdf";
 
     export_pdf_to_jpegs(&pdf_path, None).unwrap_or_else(|e| {
         eprintln!("处理 PDF 时出错: {:?}", e);
