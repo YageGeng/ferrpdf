@@ -7,9 +7,10 @@ anyhow = "1.0.95"
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes"] }
 tracing-subscriber = { version = "0.3.19", features = [
-    "env-filter",
+    "fmt",
     "json",
     "registry",
+    "env-filter",
 ] }
 
 [profile.release]
