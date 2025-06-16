@@ -31,10 +31,7 @@ pub fn init() -> Result<(), Box<dyn Error>> {
 
     let mut session = Session::builder()?.commit_from_file("models/yolov12s-doclaynet.onnx")?;
 
-    let name = session.outputs.first().map(|output| &output.name);
-    println!("{:?}", name);
-
-    // Run YOLOv8 inference
+    // Run YOLOv12 inference
     let now = Instant::now();
     let outputs: SessionOutputs =
         session.run(inputs!["images" => TensorRef::from_array_view(&input)?])?;
@@ -46,7 +43,7 @@ pub fn init() -> Result<(), Box<dyn Error>> {
 
     let output = output.slice(ndarray::s![.., .., 0]);
 
-    for prediction in output.axis_iter(ndarray::Axis(1)) {
+    for prediction in output.axis_iter(ndarray::Axis(0)) {
         const CXYWH_OFFSET: usize = 4;
         let bbox = prediction.slice(ndarray::s![0..CXYWH_OFFSET]);
 
@@ -57,7 +54,7 @@ pub fn init() -> Result<(), Box<dyn Error>> {
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap();
 
-        if proba < 0.3 {
+        if proba < 0.5 {
             continue;
         }
 
