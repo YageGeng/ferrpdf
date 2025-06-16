@@ -26,16 +26,30 @@ fn export_pdf_to_jpegs<T: AsRef<Path>>(
         std::fs::create_dir_all(&images_dir).expect("无法创建图片输出目录");
     }
 
-    let render_config = PdfRenderConfig::new()
-        .set_target_width(2048)
-        .set_maximum_height(2048)
-        .rotate_if_landscape(PdfPageRenderRotation::Degrees90, true);
-
-    for (index, page) in document.pages().iter().enumerate() {
+    for (index, page) in document.pages().iter().take(1).enumerate() {
         let output_path = images_dir.join(format!("test-page-{}.jpg", index));
 
-        if let Ok(text) = page.text() {
-            println!("{}", text.all());
+        let width = page.width().value;
+        let height = page.height().value;
+
+        let scale = f32::min(1024.0 / width, 1024.0 / height);
+
+        let render_config = PdfRenderConfig::new()
+            .scale_page_by_factor(scale)
+            .rotate_if_landscape(PdfPageRenderRotation::Degrees90, true);
+
+        println!("Annotaion:");
+        for anno in page.annotations().iter() {
+            if let Some(link) = anno.as_link_annotation() {
+                let bbox = link.bounds().unwrap();
+                println!("Ref: {}", page.text()?.inside_rect(bbox));
+            }
+        }
+
+        println!("Content: {}", page.objects().len());
+        for (idx, obj) in page.objects().iter().enumerate() {
+            let bbox = obj.bounds().unwrap();
+            println!("{idx}:{}", page.text()?.inside_rect(bbox))
         }
 
         page.render_with_config(&render_config)?
@@ -49,7 +63,15 @@ fn export_pdf_to_jpegs<T: AsRef<Path>>(
 }
 
 pub fn main() {
-    let pdf_path = "/Users/isbset/Downloads/物种分布模型-物种分布模型在预测海洋微体生物分布中的应用-Cong JY.pdf";
+    // let pdf_path =
+    //     "/home/isbest/Downloads/DocBank: A Benchmark Dataset for Document Layout Analysis.pdf";
+
+    // export_pdf_to_jpegs(&pdf_path, None).unwrap_or_else(|e| {
+    //     eprintln!("处理 PDF 时出错: {:?}", e);
+    // });
+
+    // println!("\n\n=======================\n");
+    let pdf_path = "/home/isbest/Downloads/P4_ Plug-and-Play Discrete Prompting for Large Lan.pdf";
 
     export_pdf_to_jpegs(&pdf_path, None).unwrap_or_else(|e| {
         eprintln!("处理 PDF 时出错: {:?}", e);
