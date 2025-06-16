@@ -27,8 +27,8 @@ fn export_pdf_to_jpegs<T: AsRef<Path>>(
     }
 
     let render_config = PdfRenderConfig::new()
-        .set_target_width(2000)
-        .set_maximum_height(2000)
+        .set_target_width(2048)
+        .set_maximum_height(2048)
         .rotate_if_landscape(PdfPageRenderRotation::Degrees90, true);
 
     for (index, page) in document.pages().iter().enumerate() {
@@ -49,7 +49,7 @@ fn export_pdf_to_jpegs<T: AsRef<Path>>(
 }
 
 pub fn main() {
-    let pdf_path = "/home/isbest/Downloads/Visual-RFT_ Visual Reinforcement Fine-Tuning.pdf";
+    let pdf_path = "/Users/isbset/Downloads/物种分布模型-物种分布模型在预测海洋微体生物分布中的应用-Cong JY.pdf";
 
     export_pdf_to_jpegs(&pdf_path, None).unwrap_or_else(|e| {
         eprintln!("处理 PDF 时出错: {:?}", e);
