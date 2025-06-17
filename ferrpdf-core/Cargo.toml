@@ -4,17 +4,26 @@ version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "layout-inference"
-path = "src/bin/layout_inference.rs"
+name = "layout"
+path = "src/bin/layout.rs"
+
+[[bin]]
+name = "pdf2img"
+path = "src/bin/pdf2img.rs"
 
 [dependencies]
-glam = "0.30.4"
-image = "0.25.6"
-imageproc = "0.25.0"
-ndarray = "0.16.1"
+glam = "0.30"
+image = "0.25"
+imageproc = "0.25"
+ndarray = "0.16"
 ort = { version = "=2.0.0-rc.10" }
 pdfium-render = { version = "=0.8.27", features = ["bindings", "sync"] }
 ab_glyph = "0.2"
-snafu = { version = "0.8.6", features = ["rust_1_81"] }
+snafu = { version = "0.8", features = ["rust_1_81"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+flate2 = "1.0"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+tar = "0.4"

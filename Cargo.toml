@@ -1,5 +1,5 @@
 [workspace]
-members = ["ferrpdf-core", "pdf-render"]
+members = ["ferrpdf-core"]
 resolver = "2"
 
 [workspace.dependencies]
