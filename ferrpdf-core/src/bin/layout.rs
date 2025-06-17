@@ -71,6 +71,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         layouts_after_nms, layouts_before_nms
     );
 
+    // Sort by reading order (top-to-bottom, left-to-right, multi-column aware)
+    info!("Sorting layout elements by reading order...");
+    OrtSession::sort_by_reading_order(&mut layouts);
+    info!("Layout elements sorted by reading order");
+
     // Log detected layout elements
     if layouts.is_empty() {
         warn!("No layout elements detected after filtering");

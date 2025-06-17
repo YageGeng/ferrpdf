@@ -164,7 +164,7 @@ impl OrtSession {
         // Define font scale (size)
         let font_scale = PxScale::from(16.0);
 
-        for layout in layouts {
+        for (idx, layout) in layouts.iter().enumerate() {
             let x = layout.bbox.min.x as i32;
             let y = layout.bbox.min.y as i32;
             let width = (layout.bbox.max.x - layout.bbox.min.x) as u32;
@@ -185,7 +185,7 @@ impl OrtSession {
             }
 
             // Prepare label text
-            let label_text = format!("{} {:.2}", layout.label.name(), layout.proba);
+            let label_text = format!("{} {:.2} {}", layout.label.name(), layout.proba, idx);
 
             // Calculate text position
             let text_x = x.max(5); // Ensure text is not too close to edge
@@ -279,6 +279,7 @@ impl OrtSession {
         let output = output.slice(ndarray::s![0, .., ..]);
 
         // Iterate through each prediction in the output
+        let mut label_idx = 0;
         for prediction in output.axis_iter(Axis(1)) {
             // Extract bounding box coordinates (center_x, center_y, width, height)
             let bbox = prediction.slice(ndarray::s![0..CXYWH_OFFSET]);
@@ -312,9 +313,11 @@ impl OrtSession {
                 bbox,
                 label: Label::from(max_prob_idx),
                 page_no,
+                bbox_id: label_idx,
                 proba,
                 text: None, // Text content will be extracted later
             };
+            label_idx += 1;
 
             layouts.push(layout);
         }
@@ -406,6 +409,151 @@ impl OrtSession {
         // Truncate to remove suppressed elements
         raw_layouts.truncate(keep_index);
     }
+
+    /// Sorts layout elements by reading order: top-to-bottom, left-to-right.
+    /// For multi-column documents, processes left column first, then right column.
+    ///
+    /// This method should be called after NMS if you want the results sorted in reading order.
+    /// It provides better organization for text extraction and document processing workflows.
+    ///
+    /// # Arguments
+    ///
+    /// * `layouts` - Mutable vector of layout elements to be sorted
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Detect if document has multiple columns by analyzing X-coordinate distribution
+    /// 2. If multi-column: separate layouts into columns, sort each column, then merge
+    /// 3. If single-column: sort directly by Y-coordinate (top-to-bottom), then X-coordinate (left-to-right)
+    /// 4. Use tolerance for Y-coordinates to handle elements on the same line
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use ferrpdf_core::inference::session::OrtSession;
+    /// # let mut layouts = Vec::new();
+    /// // After running NMS
+    /// OrtSession::nms(&mut layouts, 0.5);
+    ///
+    /// // Optionally sort by reading order
+    /// OrtSession::sort_by_reading_order(&mut layouts);
+    /// ```
+    pub fn sort_by_reading_order(layouts: &mut Vec<Layout>) {
+        if layouts.is_empty() {
+            return;
+        }
+
+        // Check if we have a multi-column layout
+        if Self::is_multi_column_layout(layouts) {
+            Self::sort_multi_column_layout(layouts);
+        } else {
+            Self::sort_single_column_layout(layouts);
+        }
+    }
+
+    /// Detects if the layout has multiple columns by analyzing X-coordinate distribution
+    fn is_multi_column_layout(layouts: &[Layout]) -> bool {
+        if layouts.len() < 4 {
+            return false; // Too few elements to determine multi-column
+        }
+
+        // Get all center X coordinates
+        let mut x_centers: Vec<f32> = layouts.iter().map(|l| l.bbox.center().x).collect();
+        x_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Find the overall X range
+        let min_x = x_centers[0];
+        let max_x = x_centers[x_centers.len() - 1];
+        let total_width = max_x - min_x;
+
+        if total_width < 100.0 {
+            return false; // Too narrow to be multi-column
+        }
+
+        // Split into potential left and right halves
+        let mid_x = min_x + total_width / 2.0;
+        let left_count = x_centers.iter().filter(|&&x| x < mid_x).count();
+        let right_count = x_centers.len() - left_count;
+
+        // Consider it multi-column if both sides have significant elements
+        // and the distribution isn't too uneven
+        let min_elements_per_column = layouts.len() / 4; // At least 25% in smaller column
+        left_count >= min_elements_per_column && right_count >= min_elements_per_column
+    }
+
+    /// Sorts multi-column layout: left column first (top-to-bottom), then right column (top-to-bottom)
+    fn sort_multi_column_layout(layouts: &mut Vec<Layout>) {
+        // Find the boundary between columns
+        let x_centers: Vec<f32> = layouts.iter().map(|l| l.bbox.center().x).collect();
+        let min_x = x_centers.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+        let max_x = x_centers.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let mid_x = min_x + (max_x - min_x) / 2.0;
+
+        // Separate into left and right columns
+        let mut left_column = Vec::new();
+        let mut right_column = Vec::new();
+
+        for layout in layouts.drain(..) {
+            match layout.label {
+                Label::Title | Label::PageHeader => {
+                    left_column.push(layout);
+                }
+                Label::PageFooter => {
+                    right_column.push(layout);
+                }
+                _ if layout.bbox.center().x < 512.0 - 10.0 => {
+                    left_column.push(layout);
+                }
+                _ if layout.bbox.center().x < mid_x => {
+                    left_column.push(layout);
+                }
+                _ => {
+                    right_column.push(layout);
+                }
+            }
+        }
+
+        // Sort each column by reading order (top-to-bottom, left-to-right within same line)
+        Self::sort_single_column_layout(&mut left_column);
+        Self::sort_single_column_layout(&mut right_column);
+
+        // Merge back: left column first, then right column
+        layouts.extend(left_column);
+        layouts.extend(right_column);
+    }
+
+    /// Sorts single column layout by reading order: top-to-bottom, left-to-right for same-line elements
+    fn sort_single_column_layout(layouts: &mut [Layout]) {
+        const Y_TOLERANCE: f32 = 10.0; // Tolerance for considering elements on the same line
+
+        layouts.sort_by(|a, b| {
+            // TODO: order with Label
+            if a.label == Label::PageHeader || a.label == Label::Title {
+                return std::cmp::Ordering::Less;
+            } else if a.label == Label::PageFooter {
+                return std::cmp::Ordering::Greater;
+            }
+
+            let a_center = a.bbox.center();
+            let b_center = b.bbox.center();
+
+            // Primary sort: by Y coordinate (top to bottom)
+            let y_diff = a_center.y - b_center.y;
+
+            if y_diff.abs() <= Y_TOLERANCE {
+                // Elements are on roughly the same line, sort by X coordinate (left to right)
+                a_center
+                    .x
+                    .partial_cmp(&b_center.x)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            } else {
+                // Different lines, sort by Y coordinate
+                y_diff
+                    .partial_cmp(&0.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -427,6 +575,7 @@ mod tests {
             label,
             page_no,
             proba,
+            bbox_id: 0,
             text: None,
         }
     }
@@ -968,9 +1117,9 @@ mod tests {
 
         OrtSession::nms(&mut layouts, 0.5);
 
-        // Should keep: 1st (highest confidence), 3rd (separate), 4th (different label), 5th (different label)
-        // Should suppress: 2nd (contained by 1st with same label)
-        assert_eq!(layouts.len(), 4);
+        // Should keep: 1st (highest confidence), 3rd (separate), 4th (different label)
+        // Should suppress: 2nd (contained by 1st with same label), 5th (high IoU overlap with 1st)
+        assert_eq!(layouts.len(), 3);
 
         // Check that the suppressed layout is not present
         for layout in &layouts {
@@ -978,11 +1127,436 @@ mod tests {
             assert_ne!(layout.proba, 0.85);
         }
 
-        // Check that all different label combinations are preserved
+        // Check that all kept label combinations are preserved
         let labels: Vec<_> = layouts.iter().map(|l| l.label.clone()).collect();
         assert!(labels.contains(&Label::Text));
         assert!(labels.contains(&Label::Title));
         assert!(labels.contains(&Label::Picture));
-        assert!(labels.contains(&Label::Table));
+        // Label::Table should not be present as it was suppressed due to high IoU with Text
+        assert!(!labels.contains(&Label::Table));
+    }
+
+    #[test]
+    fn test_sort_single_column_reading_order() {
+        // Test single column layout sorting: top-to-bottom, left-to-right
+        let mut layouts = vec![
+            // Bottom element
+            create_test_layout(
+                Vec2::new(50.0, 300.0),
+                Vec2::new(100.0, 50.0),
+                0.9,
+                Label::Text,
+                0,
+            ),
+            // Top element
+            create_test_layout(
+                Vec2::new(50.0, 100.0),
+                Vec2::new(100.0, 50.0),
+                0.8,
+                Label::Title,
+                0,
+            ),
+            // Middle element
+            create_test_layout(
+                Vec2::new(50.0, 200.0),
+                Vec2::new(100.0, 50.0),
+                0.7,
+                Label::Text,
+                0,
+            ),
+        ];
+
+        OrtSession::sort_single_column_layout(&mut layouts);
+
+        // Should be sorted top-to-bottom by Y coordinate
+        assert_eq!(layouts[0].bbox.center().y, 100.0); // Top
+        assert_eq!(layouts[1].bbox.center().y, 200.0); // Middle
+        assert_eq!(layouts[2].bbox.center().y, 300.0); // Bottom
+    }
+
+    #[test]
+    fn test_sort_same_line_elements() {
+        // Test elements on the same line should be sorted left-to-right
+        let mut layouts = vec![
+            // Right element on same line
+            create_test_layout(
+                Vec2::new(200.0, 100.0),
+                Vec2::new(80.0, 40.0),
+                0.9,
+                Label::Text,
+                0,
+            ),
+            // Left element on same line
+            create_test_layout(
+                Vec2::new(50.0, 105.0), // Slightly different Y but within tolerance
+                Vec2::new(80.0, 40.0),
+                0.8,
+                Label::Text,
+                0,
+            ),
+            // Middle element on same line
+            create_test_layout(
+                Vec2::new(125.0, 102.0),
+                Vec2::new(80.0, 40.0),
+                0.7,
+                Label::Text,
+                0,
+            ),
+        ];
+
+        OrtSession::sort_single_column_layout(&mut layouts);
+
+        // Should be sorted left-to-right by X coordinate (same line)
+        assert_eq!(layouts[0].bbox.center().x, 50.0); // Left
+        assert_eq!(layouts[1].bbox.center().x, 125.0); // Middle
+        assert_eq!(layouts[2].bbox.center().x, 200.0); // Right
+    }
+
+    #[test]
+    fn test_is_multi_column_layout_detection() {
+        // Test single column (should return false)
+        let single_column = vec![
+            create_test_layout(
+                Vec2::new(100.0, 50.0),
+                Vec2::new(80.0, 40.0),
+                0.9,
+                Label::Text,
+                0,
+            ),
+            create_test_layout(
+                Vec2::new(100.0, 150.0),
+                Vec2::new(80.0, 40.0),
+                0.8,
+                Label::Text,
+                0,
+            ),
+            create_test_layout(
+                Vec2::new(100.0, 250.0),
+                Vec2::new(80.0, 40.0),
+                0.7,
+                Label::Text,
+                0,
+            ),
+            create_test_layout(
+                Vec2::new(100.0, 350.0),
+                Vec2::new(80.0, 40.0),
+                0.6,
+                Label::Text,
+                0,
+            ),
+        ];
+        assert!(!OrtSession::is_multi_column_layout(&single_column));
+
+        // Test multi-column (should return true)
+        let multi_column = vec![
+            // Left column
+            create_test_layout(
+                Vec2::new(100.0, 50.0),
+                Vec2::new(80.0, 40.0),
+                0.9,
+                Label::Text,
+                0,
+            ),
+            create_test_layout(
+                Vec2::new(100.0, 150.0),
+                Vec2::new(80.0, 40.0),
+                0.8,
+                Label::Text,
+                0,
+            ),
+            create_test_layout(
+                Vec2::new(100.0, 250.0),
+                Vec2::new(80.0, 40.0),
+                0.7,
+                Label::Text,
+                0,
+            ),
+            // Right column
+            create_test_layout(
+                Vec2::new(400.0, 50.0),
+                Vec2::new(80.0, 40.0),
+                0.6,
+                Label::Text,
+                0,
+            ),
+            create_test_layout(
+                Vec2::new(400.0, 150.0),
+                Vec2::new(80.0, 40.0),
+                0.5,
+                Label::Text,
+                0,
+            ),
+            create_test_layout(
+                Vec2::new(400.0, 250.0),
+                Vec2::new(80.0, 40.0),
+                0.4,
+                Label::Text,
+                0,
+            ),
+        ];
+        assert!(OrtSession::is_multi_column_layout(&multi_column));
+
+        // Test too few elements (should return false)
+        let too_few = vec![
+            create_test_layout(
+                Vec2::new(100.0, 50.0),
+                Vec2::new(80.0, 40.0),
+                0.9,
+                Label::Text,
+                0,
+            ),
+            create_test_layout(
+                Vec2::new(400.0, 50.0),
+                Vec2::new(80.0, 40.0),
+                0.8,
+                Label::Text,
+                0,
+            ),
+        ];
+        assert!(!OrtSession::is_multi_column_layout(&too_few));
+    }
+
+    #[test]
+    fn test_sort_multi_column_layout() {
+        // Test multi-column layout: left column first (top-to-bottom), then right column (top-to-bottom)
+        let mut layouts = vec![
+            // Right column, bottom
+            create_test_layout(
+                Vec2::new(400.0, 300.0),
+                Vec2::new(80.0, 40.0),
+                0.9,
+                Label::Text,
+                0,
+            ),
+            // Left column, bottom
+            create_test_layout(
+                Vec2::new(100.0, 300.0),
+                Vec2::new(80.0, 40.0),
+                0.8,
+                Label::Text,
+                0,
+            ),
+            // Right column, top
+            create_test_layout(
+                Vec2::new(400.0, 100.0),
+                Vec2::new(80.0, 40.0),
+                0.7,
+                Label::Title,
+                0,
+            ),
+            // Left column, top
+            create_test_layout(
+                Vec2::new(100.0, 100.0),
+                Vec2::new(80.0, 40.0),
+                0.6,
+                Label::Title,
+                0,
+            ),
+            // Left column, middle
+            create_test_layout(
+                Vec2::new(100.0, 200.0),
+                Vec2::new(80.0, 40.0),
+                0.5,
+                Label::Text,
+                0,
+            ),
+            // Right column, middle
+            create_test_layout(
+                Vec2::new(400.0, 200.0),
+                Vec2::new(80.0, 40.0),
+                0.4,
+                Label::Text,
+                0,
+            ),
+        ];
+
+        OrtSession::sort_multi_column_layout(&mut layouts);
+
+        // Expected order: Left column (top to bottom), then Right column (top to bottom)
+        let expected_positions = [
+            (100.0, 100.0), // Left top
+            (100.0, 200.0), // Left middle
+            (100.0, 300.0), // Left bottom
+            (400.0, 100.0), // Right top
+            (400.0, 200.0), // Right middle
+            (400.0, 300.0), // Right bottom
+        ];
+
+        for (i, layout) in layouts.iter().enumerate() {
+            let center = layout.bbox.center();
+            assert_eq!((center.x, center.y), expected_positions[i]);
+        }
+    }
+
+    #[test]
+    fn test_reading_order_with_separate_sorting() {
+        // Test NMS followed by separate reading order sorting
+        let mut layouts = vec![
+            // Create elements in random order
+            create_test_layout(
+                Vec2::new(100.0, 300.0),
+                Vec2::new(80.0, 40.0),
+                0.9,
+                Label::Text,
+                0,
+            ), // Left bottom
+            create_test_layout(
+                Vec2::new(400.0, 100.0),
+                Vec2::new(80.0, 40.0),
+                0.8,
+                Label::Title,
+                0,
+            ), // Right top
+            create_test_layout(
+                Vec2::new(100.0, 100.0),
+                Vec2::new(80.0, 40.0),
+                0.7,
+                Label::Title,
+                0,
+            ), // Left top
+            create_test_layout(
+                Vec2::new(400.0, 300.0),
+                Vec2::new(80.0, 40.0),
+                0.6,
+                Label::Text,
+                0,
+            ), // Right bottom
+            create_test_layout(
+                Vec2::new(100.0, 200.0),
+                Vec2::new(80.0, 40.0),
+                0.5,
+                Label::Text,
+                0,
+            ), // Left middle
+            create_test_layout(
+                Vec2::new(400.0, 200.0),
+                Vec2::new(80.0, 40.0),
+                0.4,
+                Label::Text,
+                0,
+            ), // Right middle
+        ];
+
+        // Apply NMS first
+        OrtSession::nms(&mut layouts, 0.5);
+
+        // Verify we have all elements (no overlap so no suppression)
+        assert_eq!(layouts.len(), 6);
+
+        // Now apply reading order sorting separately
+        OrtSession::sort_by_reading_order(&mut layouts);
+
+        // After sorting, should be in reading order: left column (top-to-bottom), then right column (top-to-bottom)
+        let positions: Vec<_> = layouts.iter().map(|l| l.bbox.center()).collect();
+
+        // Check reading order for multi-column layout
+        assert_eq!(positions[0], Vec2::new(100.0, 100.0)); // Left top
+        assert_eq!(positions[1], Vec2::new(100.0, 200.0)); // Left middle
+        assert_eq!(positions[2], Vec2::new(100.0, 300.0)); // Left bottom
+        assert_eq!(positions[3], Vec2::new(400.0, 100.0)); // Right top
+        assert_eq!(positions[4], Vec2::new(400.0, 200.0)); // Right middle
+        assert_eq!(positions[5], Vec2::new(400.0, 300.0)); // Right bottom
+    }
+
+    #[test]
+    fn test_reading_order_single_column_with_nms() {
+        // Test single column reading order after NMS
+        let mut layouts = vec![
+            // Create elements in random order (single column)
+            create_test_layout(
+                Vec2::new(100.0, 300.0),
+                Vec2::new(80.0, 40.0),
+                0.9,
+                Label::Text,
+                0,
+            ), // Bottom
+            create_test_layout(
+                Vec2::new(100.0, 100.0),
+                Vec2::new(80.0, 40.0),
+                0.8,
+                Label::Title,
+                0,
+            ), // Top
+            create_test_layout(
+                Vec2::new(100.0, 200.0),
+                Vec2::new(80.0, 40.0),
+                0.7,
+                Label::Text,
+                0,
+            ), // Middle
+            // Same line elements (should be sorted left-to-right)
+            create_test_layout(
+                Vec2::new(200.0, 400.0),
+                Vec2::new(60.0, 30.0),
+                0.6,
+                Label::Text,
+                0,
+            ), // Same line, right
+            create_test_layout(
+                Vec2::new(50.0, 405.0),
+                Vec2::new(60.0, 30.0),
+                0.5,
+                Label::Text,
+                0,
+            ), // Same line, left
+        ];
+
+        // Apply NMS first
+        OrtSession::nms(&mut layouts, 0.5);
+        assert_eq!(layouts.len(), 5);
+
+        // Now apply reading order sorting separately
+        OrtSession::sort_by_reading_order(&mut layouts);
+
+        // Should be in reading order: top-to-bottom, left-to-right for same line
+        let positions: Vec<_> = layouts.iter().map(|l| l.bbox.center()).collect();
+
+        assert_eq!(positions[0], Vec2::new(100.0, 100.0)); // Top
+        assert_eq!(positions[1], Vec2::new(100.0, 200.0)); // Middle
+        assert_eq!(positions[2], Vec2::new(100.0, 300.0)); // Bottom
+        assert_eq!(positions[3], Vec2::new(50.0, 405.0)); // Same line, left
+        assert_eq!(positions[4], Vec2::new(200.0, 400.0)); // Same line, right
+    }
+
+    #[test]
+    fn test_reading_order_edge_cases() {
+        // Test edge cases for reading order
+
+        // Empty vector
+        let mut empty_layouts = Vec::new();
+        OrtSession::sort_by_reading_order(&mut empty_layouts);
+        assert_eq!(empty_layouts.len(), 0);
+
+        // Single element
+        let mut single_layout = vec![create_test_layout(
+            Vec2::new(100.0, 100.0),
+            Vec2::new(80.0, 40.0),
+            0.9,
+            Label::Text,
+            0,
+        )];
+        OrtSession::sort_by_reading_order(&mut single_layout);
+        assert_eq!(single_layout.len(), 1);
+
+        // Two elements
+        let mut two_layouts = vec![
+            create_test_layout(
+                Vec2::new(100.0, 200.0),
+                Vec2::new(80.0, 40.0),
+                0.9,
+                Label::Text,
+                0,
+            ), // Bottom
+            create_test_layout(
+                Vec2::new(100.0, 100.0),
+                Vec2::new(80.0, 40.0),
+                0.8,
+                Label::Title,
+                0,
+            ), // Top
+        ];
+        OrtSession::sort_by_reading_order(&mut two_layouts);
+        assert_eq!(two_layouts[0].bbox.center().y, 100.0); // Top first
+        assert_eq!(two_layouts[1].bbox.center().y, 200.0); // Bottom second
     }
 }

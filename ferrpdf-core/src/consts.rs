@@ -55,7 +55,7 @@ pub const PROBA_THRESHOLD: f32 = 0.2;
 /// balance between removing duplicates and preserving distinct objects:
 /// - Lower values (0.3-0.4): More aggressive suppression, may remove valid detections
 /// - Higher values (0.6-0.8): Less aggressive, may keep more duplicates
-pub const NMS_IOU_THRESHOLD: f32 = 0.5;
+pub const NMS_IOU_THRESHOLD: f32 = 0.45;
 
 /// Required input width for the YOLOv12 model.
 ///

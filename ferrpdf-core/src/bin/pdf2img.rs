@@ -71,7 +71,8 @@ pub fn main() {
     // });
 
     // println!("\n\n=======================\n");
-    let pdf_path = "/home/isbest/Downloads/P4_ Plug-and-Play Discrete Prompting for Large Lan.pdf";
+    let pdf_path =
+        "/home/isbest/Downloads/DocBank: A Benchmark Dataset for Document Layout Analysis.pdf";
 
     export_pdf_to_jpegs(&pdf_path, None).unwrap_or_else(|e| {
         eprintln!("处理 PDF 时出错: {:?}", e);
