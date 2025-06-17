@@ -484,10 +484,18 @@ impl OrtSession {
     /// Sorts multi-column layout: left column first (top-to-bottom), then right column (top-to-bottom)
     fn sort_multi_column_layout(layouts: &mut Vec<Layout>) {
         // Find the boundary between columns
-        let x_centers: Vec<f32> = layouts.iter().map(|l| l.bbox.center().x).collect();
-        let min_x = x_centers.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-        let max_x = x_centers.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let bbox_widths: Vec<(f32, f32)> = layouts
+            .iter()
+            .map(|l| (l.bbox.min.x, l.bbox.max.x))
+            .collect();
+        let (min_x, max_x) = bbox_widths.iter().fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(min_x, max_x), &(o_min_x, o_max_x)| (min_x.min(o_min_x), max_x.max(o_max_x)),
+        );
         let mid_x = min_x + (max_x - min_x) / 2.0;
+
+        let mid_min_x = mid_x / 3.0;
+        let mid_max_x = mid_min_x + mid_x;
 
         // Separate into left and right columns
         let mut left_column = Vec::new();
@@ -501,7 +509,7 @@ impl OrtSession {
                 Label::PageFooter => {
                     right_column.push(layout);
                 }
-                _ if layout.bbox.center().x < 512.0 - 10.0 => {
+                _ if layout.bbox.center().x > mid_min_x && layout.bbox.center().x < mid_max_x => {
                     left_column.push(layout);
                 }
                 _ if layout.bbox.center().x < mid_x => {
