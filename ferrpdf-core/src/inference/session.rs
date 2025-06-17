@@ -1,6 +1,7 @@
+use ab_glyph::{FontRef, PxScale};
 use glam::Vec2;
 use image::{DynamicImage, GenericImageView, Rgb, imageops::FilterType};
-use imageproc::drawing::{draw_filled_rect_mut, draw_hollow_rect_mut};
+use imageproc::drawing::{draw_hollow_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
 use ndarray::{Array4, ArrayBase, Axis, Dim, OwnedRepr};
 use ort::{
@@ -21,6 +22,7 @@ use crate::{
 /// Embedded YOLOv12 model binary for document layout analysis
 /// The model is trained on DocLayNet dataset for detecting document elements
 pub const YOLOV12: &[u8] = include_bytes!("../../../models/yolov12s-doclaynet.onnx");
+pub const FONT: &[u8] = include_bytes!("../../../fonts/DejaVuSans.ttf");
 
 /// ONNX Runtime session wrapper for YOLOv12 document layout detection
 pub struct OrtSession {
@@ -135,7 +137,7 @@ impl OrtSession {
     ///
     /// This method creates a visual representation of the detected layout elements
     /// by drawing colored bounding boxes around each detection and labeling them
-    /// with their class names and confidence scores.
+    /// with their class names and confidence scores using TrueType font rendering.
     ///
     /// # Arguments
     ///
@@ -147,17 +149,21 @@ impl OrtSession {
     ///
     /// - Color-coded bounding boxes based on element type
     /// - Thick border lines for better visibility
-    /// - Text labels with class names and confidence scores
+    /// - High-quality text labels using DejaVu Sans font
     /// - Automatic text positioning to avoid overlap
     ///
     pub fn draw_bbox<P: AsRef<Path>>(
         img: &DynamicImage,
         layouts: &[Layout],
         output_path: P,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), FerrpdfError> {
         let mut output_img = img.to_rgb8();
 
-        // Use simple bitmap text rendering approach
+        let font = FontRef::try_from_slice(FONT).context(FontSnafu {})?;
+
+        // Define font scale (size)
+        let font_scale = PxScale::from(16.0);
+
         for layout in layouts {
             let x = layout.bbox.min.x as i32;
             let y = layout.bbox.min.y as i32;
@@ -178,32 +184,35 @@ impl OrtSession {
                 draw_hollow_rect_mut(&mut output_img, thick_rect, color);
             }
 
-            // Draw label indicator as colored rectangle above bbox
+            // Prepare label text
             let label_text = format!("{} {:.2}", layout.label.name(), layout.proba);
+
+            // Calculate text position
             let text_x = x.max(5); // Ensure text is not too close to edge
-            let text_y = (y - 25).max(5); // Position text above bbox
+            let text_y = y; // Position text above bbox with more space
 
-            // Calculate label indicator dimensions
-            let label_width = (label_text.len() as f32 * 8.0) as u32; // Approximate width
-            let label_height = 20u32; // Fixed height
-
-            // Draw label indicator rectangle
-            if text_x >= 0
-                && text_y >= 0
-                && text_x + label_width as i32 <= output_img.width() as i32
-                && text_y + label_height as i32 <= output_img.height() as i32
-            {
-                // Draw colored background rectangle as label indicator
-                let label_rect = Rect::at(text_x, text_y).of_size(label_width, label_height);
-                draw_filled_rect_mut(&mut output_img, label_rect, color);
-
-                // Draw border around label for better visibility
-                draw_hollow_rect_mut(&mut output_img, label_rect, Rgb([255, 255, 255]));
+            let text_color = Rgb([255, 0, 0]); // Red text color
+            // Draw text with white color for good contrast
+            if text_x >= 0 && text_y >= 0 {
+                // Draw the text using TrueType font
+                draw_text_mut(
+                    &mut output_img,
+                    text_color,
+                    text_x,
+                    text_y,
+                    font_scale,
+                    &font,
+                    &label_text,
+                );
             }
         }
 
         // Save the output image
-        output_img.save(output_path)?;
+        output_img
+            .save(output_path.as_ref())
+            .context(ImageWriteSnafu {
+                path: output_path.as_ref().to_string_lossy(),
+            })?;
 
         Ok(())
     }

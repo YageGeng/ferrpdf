@@ -22,4 +22,16 @@ pub enum FerrpdfError {
         source: ndarray::ShapeError,
         stage: String,
     },
+    #[snafu(display("Load Font error: {}", source))]
+    Font { source: ab_glyph::InvalidFont },
+    #[snafu(display("Image Write error: {}", source))]
+    ImageWrite {
+        source: image::ImageError,
+        path: String,
+    },
+    #[snafu(display("Write `{}` error: {}", path, source))]
+    IoWrite {
+        source: std::io::Error,
+        path: String,
+    },
 }

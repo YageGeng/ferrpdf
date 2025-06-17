@@ -89,10 +89,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "Original image size: {}x{}",
         original_width, original_height
     );
-    println!(
-        "Inference time: {:.2}ms",
-        inference_time.as_secs_f32() * 1000.0
-    );
+    println!("Inference time: {}ms", inference_time.as_millis());
     println!("Raw detections: {}", layouts_before_nms);
     println!("Final detections: {}", layouts_after_nms);
     println!("Confidence threshold: {}", PROBA_THRESHOLD);
