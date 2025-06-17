@@ -20,6 +20,7 @@ impl Bbox {
     /// # Example
     /// ```
     /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
     /// let bbox = Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(10.0, 5.0));
     /// ```
     pub fn new(min: glam::Vec2, max: glam::Vec2) -> Self {
@@ -35,6 +36,7 @@ impl Bbox {
     /// # Example
     /// ```
     /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
     /// let bbox = Bbox::new_from_min_size(Vec2::new(1.0, 2.0), Vec2::new(5.0, 3.0));
     /// // Creates a bbox from (1,2) to (6,5)
     /// ```
@@ -57,12 +59,14 @@ impl Bbox {
     /// # Example
     /// ```
     /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
     /// // Create a bbox centered at (100, 200) with size 50x80
     /// let bbox = Bbox::from_center_size(Vec2::new(100.0, 200.0), Vec2::new(50.0, 80.0));
     /// // Results in bbox from (75, 160) to (125, 240)
     /// ```
     pub fn from_center_size(center: glam::Vec2, size: glam::Vec2) -> Self {
         let half_size = size / 2.0;
+        // TODO: Bad Case
         Self {
             min: center - half_size,
             max: center + half_size,
@@ -76,6 +80,8 @@ impl Bbox {
     ///
     /// # Example
     /// ```
+    /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
     /// let bbox = Bbox::new_from_min_size(Vec2::ZERO, Vec2::new(4.0, 3.0));
     /// assert_eq!(bbox.area(), 12.0);
     /// ```
@@ -92,6 +98,8 @@ impl Bbox {
     ///
     /// # Example
     /// ```
+    /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
     /// let bbox = Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(4.0, 2.0));
     /// assert_eq!(bbox.center(), Vec2::new(2.0, 1.0));
     /// ```
@@ -119,11 +127,13 @@ impl Bbox {
     ///
     /// # Example
     /// ```
+    /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
     /// let bbox1 = Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(4.0, 4.0));
     /// let bbox2 = Bbox::new(Vec2::new(2.0, 2.0), Vec2::new(6.0, 6.0));
-    /// assert_eq!(bbox1.intersection_area(&bbox2), 4.0); // 2×2 overlap
+    /// assert_eq!(bbox1.intersection(&bbox2), 4.0); // 2x2 intersection area
     /// ```
-    pub fn intersection_area(&self, other: &Self) -> f32 {
+    pub fn intersection(&self, other: &Self) -> f32 {
         let min = self.min.max(other.min);
         let max = self.max.min(other.max);
 
@@ -154,12 +164,14 @@ impl Bbox {
     ///
     /// # Example
     /// ```
+    /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
     /// let bbox1 = Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(2.0, 2.0));
     /// let bbox2 = Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(2.0, 2.0));
     /// assert_eq!(bbox1.iou(&bbox2), 1.0); // Identical boxes
     /// ```
     pub fn iou(&self, other: &Self) -> f32 {
-        let intersection_area = self.intersection_area(other);
+        let intersection_area = self.intersection(other);
         let union_area = self.area() + other.area() - intersection_area;
 
         if union_area > 0.0 {
@@ -187,6 +199,8 @@ impl Bbox {
     ///
     /// # Example
     /// ```
+    /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
     /// // Image coordinates: top-left (10, 20) to bottom-right (50, 80)
     /// let image_bbox = Bbox::new(Vec2::new(10.0, 20.0), Vec2::new(50.0, 80.0));
     /// let cartesian_bbox = image_bbox.to_cartesian(100.0);
@@ -217,6 +231,7 @@ impl Bbox {
     /// # Example
     /// ```
     /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
     /// let bbox = Bbox::new(Vec2::new(-10.0, -5.0), Vec2::new(1030.0, 1030.0));
     /// let clamped = bbox.clamp(Vec2::new(0.0, 0.0), Vec2::new(1023.0, 1023.0));
     /// assert_eq!(clamped.min, Vec2::new(0.0, 0.0));
@@ -241,6 +256,7 @@ impl Bbox {
     /// # Example
     /// ```
     /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
     /// let mut bbox = Bbox::new(Vec2::new(-10.0, -5.0), Vec2::new(1030.0, 1030.0));
     /// bbox.clamp_mut(Vec2::new(0.0, 0.0), Vec2::new(1023.0, 1023.0));
     /// assert_eq!(bbox.min, Vec2::new(0.0, 0.0));
@@ -358,43 +374,43 @@ mod tests {
         // Two partially overlapping boxes (2×2 intersection)
         let bbox1 = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(4.0, 4.0));
         let bbox2 = Bbox::new(glam::Vec2::new(2.0, 2.0), glam::Vec2::new(6.0, 6.0));
-        assert_eq!(bbox1.intersection_area(&bbox2), 4.0);
+        assert_eq!(bbox1.intersection(&bbox2), 4.0);
 
         // Non-overlapping boxes (no intersection)
         let bbox3 = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(2.0, 2.0));
         let bbox4 = Bbox::new(glam::Vec2::new(3.0, 3.0), glam::Vec2::new(5.0, 5.0));
-        assert_eq!(bbox3.intersection_area(&bbox4), 0.0);
+        assert_eq!(bbox3.intersection(&bbox4), 0.0);
 
         // Identical boxes (complete overlap)
         let bbox5 = Bbox::new(glam::Vec2::new(1.0, 1.0), glam::Vec2::new(3.0, 3.0));
         let bbox6 = Bbox::new(glam::Vec2::new(1.0, 1.0), glam::Vec2::new(3.0, 3.0));
-        assert_eq!(bbox5.intersection_area(&bbox6), 4.0);
+        assert_eq!(bbox5.intersection(&bbox6), 4.0);
 
         // One box completely inside another
         let outer = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(10.0, 10.0));
         let inner = Bbox::new(glam::Vec2::new(2.0, 3.0), glam::Vec2::new(5.0, 7.0));
-        assert_eq!(outer.intersection_area(&inner), 12.0); // 3×4 = 12
-        assert_eq!(inner.intersection_area(&outer), 12.0); // Should be symmetric
+        assert_eq!(outer.intersection(&inner), 12.0); // 3×4 = 12
+        assert_eq!(inner.intersection(&outer), 12.0); // Should be symmetric
 
         // Edge touching (no area intersection)
         let left = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(2.0, 2.0));
         let right = Bbox::new(glam::Vec2::new(2.0, 0.0), glam::Vec2::new(4.0, 2.0));
-        assert_eq!(left.intersection_area(&right), 0.0);
+        assert_eq!(left.intersection(&right), 0.0);
 
         // Partial overlap with different aspect ratios
         let wide = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(6.0, 2.0));
         let tall = Bbox::new(glam::Vec2::new(1.0, 0.0), glam::Vec2::new(3.0, 4.0));
-        assert_eq!(wide.intersection_area(&tall), 4.0); // 2×2 = 4
+        assert_eq!(wide.intersection(&tall), 4.0); // 2×2 = 4
 
         // Corner overlap
         let corner1 = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(3.0, 3.0));
         let corner2 = Bbox::new(glam::Vec2::new(2.0, 2.0), glam::Vec2::new(5.0, 5.0));
-        assert_eq!(corner1.intersection_area(&corner2), 1.0); // 1×1 = 1
+        assert_eq!(corner1.intersection(&corner2), 1.0); // 1×1 = 1
 
         // Negative coordinate test
         let neg1 = Bbox::new(glam::Vec2::new(-2.0, -2.0), glam::Vec2::new(1.0, 1.0));
         let neg2 = Bbox::new(glam::Vec2::new(-1.0, -1.0), glam::Vec2::new(2.0, 2.0));
-        assert_eq!(neg1.intersection_area(&neg2), 4.0); // 2×2 = 4
+        assert_eq!(neg1.intersection(&neg2), 4.0); // 2×2 = 4
     }
 
     #[test]

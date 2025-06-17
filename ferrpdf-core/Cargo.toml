@@ -1,5 +1,5 @@
 [package]
-name = "core"
+name = "ferrpdf-core"
 version = "0.1.0"
 edition = "2024"
 
@@ -14,5 +14,6 @@ imageproc = "0.25.0"
 ndarray = "0.16.1"
 ort = { version = "=2.0.0-rc.10" }
 pdfium-render = { version = "=0.8.27", features = ["bindings", "sync"] }
+snafu = { version = "0.8.6", features = ["rust_1_81"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

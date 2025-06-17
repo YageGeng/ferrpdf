@@ -4,7 +4,7 @@ use crate::analysis::{bbox::Bbox, labels::Label};
 pub struct Layout {
     pub bbox: Bbox,
     pub label: Label,
-    pub page_no: u32,
+    pub page_no: usize,
     pub proba: f32,
     pub text: Option<String>,
 }
