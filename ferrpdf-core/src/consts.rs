@@ -56,3 +56,36 @@ pub const PROBA_THRESHOLD: f32 = 0.2;
 /// - Lower values (0.3-0.4): More aggressive suppression, may remove valid detections
 /// - Higher values (0.6-0.8): Less aggressive, may keep more duplicates
 pub const NMS_IOU_THRESHOLD: f32 = 0.5;
+
+/// Required input width for the YOLOv12 model.
+///
+/// This is the standard width that input images must be resized to
+/// before feeding into the model. The model expects square inputs
+/// with consistent dimensions for optimal performance.
+pub const REQUIRED_WIDTH: u32 = 1024;
+
+/// Required input height for the YOLOv12 model.
+///
+/// This is the standard height that input images must be resized to
+/// before feeding into the model. The model expects square inputs
+/// with consistent dimensions for optimal performance.
+pub const REQUIRED_HEIGHT: u32 = 1024;
+
+/// Number of color channels in the input image.
+///
+/// RGB images have 3 channels: Red, Green, Blue.
+/// This constant is used for tensor shape calculations.
+pub const INPUT_CHANNELS: usize = 3;
+
+/// Batch size for model inference.
+///
+/// Currently set to 1 for single image processing.
+/// Can be increased for batch processing if needed.
+pub const BATCH_SIZE: usize = 1;
+
+/// Background fill value for image preprocessing.
+///
+/// When resizing images, areas not covered by the original image
+/// are filled with this normalized value (144/255 ≈ 0.565).
+/// This value is chosen to represent a neutral gray background.
+pub const BACKGROUND_FILL_VALUE: f32 = 144.0 / 255.0;

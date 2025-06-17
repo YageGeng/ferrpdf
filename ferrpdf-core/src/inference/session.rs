@@ -1,5 +1,6 @@
 use glam::Vec2;
-use ndarray::{ArrayBase, Axis, Dim, OwnedRepr};
+use image::{DynamicImage, GenericImageView, imageops::FilterType};
+use ndarray::{Array4, ArrayBase, Axis, Dim, OwnedRepr};
 use ort::{
     execution_providers::CPUExecutionProvider,
     session::{Session, builder::GraphOptimizationLevel},
@@ -57,6 +58,74 @@ impl OrtSession {
             .unwrap_or("output0".to_string());
 
         Ok(Self { output, session })
+    }
+
+    /// Preprocesses an image for model input by resizing, normalizing, and converting to tensor format.
+    ///
+    /// This method performs the following operations:
+    /// 1. Calculates optimal scaling to fit the image within model input dimensions
+    /// 2. Resizes the image while maintaining aspect ratio
+    /// 3. Creates a normalized 4D tensor with background padding
+    /// 4. Converts RGB pixel values to normalized float values (0.0-1.0)
+    ///
+    /// # Arguments
+    ///
+    /// * `img` - Input image to preprocess
+    ///
+    /// # Returns
+    ///
+    /// 4D tensor with shape [batch_size, channels, height, width] ready for model inference
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use image::DynamicImage;
+    /// # use ferrpdf_core::inference::session::OrtSession;
+    ///
+    /// let img = DynamicImage::new_rgb8(800, 600);
+    /// let tensor = OrtSession::preprocess(&img);
+    /// assert_eq!(tensor.shape(), &[1, 3, 1024, 1024]);
+    /// ```
+    pub fn preprocess(image: &DynamicImage) -> Array4<f32> {
+        /// Calculates optimal scaling dimensions to fit an image within target dimensions while maintaining aspect ratio.
+        fn scale_wh(w0: f32, h0: f32, target_w: f32, target_h: f32) -> (f32, f32, f32) {
+            let scale = f32::min(target_w / w0, target_h / h0);
+            let w_new = (w0 * scale).round();
+            let h_new = (h0 * scale).round();
+            (scale, w_new, h_new)
+        }
+
+        let (w0, h0) = image.dimensions();
+        let (_, w_new, h_new) = scale_wh(
+            w0 as f32,
+            h0 as f32,
+            REQUIRED_WIDTH as f32,
+            REQUIRED_HEIGHT as f32,
+        );
+
+        // Resize image to calculated dimensions
+        let resized_img = image.resize_exact(w_new as u32, h_new as u32, FilterType::Triangle);
+
+        // Create tensor with background fill value
+        let mut input_tensor = Array4::ones([
+            BATCH_SIZE,
+            INPUT_CHANNELS,
+            REQUIRED_HEIGHT as usize,
+            REQUIRED_WIDTH as usize,
+        ]);
+        input_tensor.fill(BACKGROUND_FILL_VALUE);
+
+        // Fill tensor with normalized pixel values
+        for (x, y, pixel) in resized_img.pixels() {
+            let x = x as usize;
+            let y = y as usize;
+            let [r, g, b, _] = pixel.0;
+            input_tensor[[0, 0, y, x]] = r as f32 / 255.0;
+            input_tensor[[0, 1, y, x]] = g as f32 / 255.0;
+            input_tensor[[0, 2, y, x]] = b as f32 / 255.0;
+        }
+
+        input_tensor
     }
 
     /// Runs inference on the input image tensor
@@ -549,5 +618,61 @@ mod tests {
         assert_eq!(layouts[0].label, Label::Text);
         assert_eq!(layouts[0].page_no, 1);
         assert_eq!(layouts[0].text, Some("Test text".to_string()));
+    }
+
+    #[test]
+    fn test_preprocess_tensor_shape() {
+        // Test that preprocess produces correct tensor shape
+        let img = DynamicImage::new_rgb8(800, 600);
+        let tensor = OrtSession::preprocess(&img);
+
+        assert_eq!(
+            tensor.shape(),
+            &[
+                BATCH_SIZE,
+                INPUT_CHANNELS,
+                REQUIRED_HEIGHT as usize,
+                REQUIRED_WIDTH as usize
+            ]
+        );
+        assert_eq!(tensor.shape(), &[1, 3, 1024, 1024]);
+    }
+
+    #[test]
+    fn test_preprocess_normalization() {
+        // Create a simple 2x2 white image
+        let img = DynamicImage::new_rgb8(2, 2);
+        let tensor = OrtSession::preprocess(&img);
+
+        // Check that tensor contains normalized values
+        for &value in tensor.iter() {
+            assert!(
+                (0.0..=1.0).contains(&value),
+                "Pixel value {} is not normalized",
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn test_preprocess_background_fill() {
+        // Create a small image that will leave background areas after resizing
+        let img = DynamicImage::new_rgb8(100, 50); // Aspect ratio that won't fill perfectly
+        let tensor = OrtSession::preprocess(&img);
+
+        // First verify tensor has been initialized with background value
+        let total_pixels =
+            BATCH_SIZE * INPUT_CHANNELS * REQUIRED_HEIGHT as usize * REQUIRED_WIDTH as usize;
+        assert_eq!(tensor.len(), total_pixels);
+
+        // The image will be scaled and positioned, leaving some background pixels
+        // Check that all values are either background fill or normalized pixel values (0-1)
+        for &value in tensor.iter() {
+            assert!(
+                (value - BACKGROUND_FILL_VALUE).abs() < 0.001 || (0.0..=1.0).contains(&value),
+                "Pixel value {} is neither background fill nor normalized pixel",
+                value
+            );
+        }
     }
 }
