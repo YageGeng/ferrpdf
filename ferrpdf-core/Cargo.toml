@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "onnx"
-path = "src/bin/onnx.rs"
+name = "layout-inference"
+path = "src/bin/layout_inference.rs"
 
 [dependencies]
 glam = "0.30.4"

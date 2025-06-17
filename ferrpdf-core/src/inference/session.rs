@@ -321,6 +321,9 @@ impl OrtSession {
     /// scores between bounding boxes. For each pair of overlapping boxes (IoU > threshold),
     /// only the detection with higher confidence is kept.
     ///
+    /// Additionally, when two bounding boxes have the same label and one completely
+    /// contains the other, the smaller (contained) bbox is removed regardless of IoU.
+    ///
     /// # Arguments
     ///
     /// * `raw_layouts` - Mutable vector of layout detections to be filtered
@@ -331,8 +334,9 @@ impl OrtSession {
     /// 1. Sort detections by confidence score (highest first)
     /// 2. Use two-pointer approach: keep_index tracks valid detections
     /// 3. For each position, compare with previous valid detections
-    /// 4. If no overlap, advance keep_index; otherwise skip current detection
-    /// 5. Truncate array to final valid length
+    /// 4. Check for containment (same label) or IoU overlap
+    /// 5. If overlap or containment found, suppress current detection
+    /// 6. Truncate array to final valid length
     pub fn nms(raw_layouts: &mut Vec<Layout>, iou_threshold: f32) {
         if raw_layouts.is_empty() || raw_layouts.len() == 1 {
             return;
@@ -354,9 +358,24 @@ impl OrtSession {
 
             // Compare current detection with all previously kept detections
             for kept_index in 0..keep_index {
-                let iou = raw_layouts[current_index]
-                    .bbox
-                    .iou(&raw_layouts[kept_index].bbox);
+                let current_layout = &raw_layouts[current_index];
+                let kept_layout = &raw_layouts[kept_index];
+
+                // Check if bboxes have the same label and one contains the other
+                if current_layout.label == kept_layout.label {
+                    // If kept bbox contains current bbox, suppress current
+                    if kept_layout.bbox.contains(&current_layout.bbox) {
+                        should_keep = false;
+                        break;
+                    }
+                    // If current bbox contains kept bbox, suppress current (kept has higher confidence)
+                    if current_layout.bbox.contains(&kept_layout.bbox) {
+                        should_keep = false;
+                        break;
+                    }
+                }
+
+                let iou = current_layout.bbox.iou(&kept_layout.bbox);
 
                 // If IoU exceeds threshold, suppress current detection
                 // Since array is sorted by confidence, previously kept detections have higher confidence
@@ -754,5 +773,207 @@ mod tests {
                 value
             );
         }
+    }
+
+    #[test]
+    fn test_nms_containment_same_label() {
+        // Test that smaller bbox is removed when contained by larger bbox with same label
+        let mut layouts = vec![
+            // Larger bbox with higher confidence - should be kept
+            create_test_layout(
+                Vec2::new(50.0, 50.0),
+                Vec2::new(100.0, 100.0), // Large bbox: (0,0) to (100,100)
+                0.9,
+                Label::Text,
+                0,
+            ),
+            // Smaller bbox completely inside larger one - should be suppressed
+            create_test_layout(
+                Vec2::new(50.0, 50.0),
+                Vec2::new(60.0, 60.0), // Small bbox: (20,20) to (80,80)
+                0.8,
+                Label::Text, // Same label
+                0,
+            ),
+        ];
+
+        OrtSession::nms(&mut layouts, 0.5);
+
+        // Only the larger bbox should remain
+        assert_eq!(layouts.len(), 1);
+        assert_eq!(layouts[0].proba, 0.9);
+        assert_eq!(layouts[0].bbox.area(), 10000.0); // 100x100
+    }
+
+    #[test]
+    fn test_nms_containment_different_labels() {
+        // Test that containment logic only applies to same-label bboxes
+        let mut layouts = vec![
+            // Larger bbox
+            create_test_layout(
+                Vec2::new(50.0, 50.0),
+                Vec2::new(100.0, 100.0),
+                0.9,
+                Label::Text,
+                0,
+            ),
+            // Smaller bbox inside larger one but different label - should be kept
+            create_test_layout(
+                Vec2::new(50.0, 50.0),
+                Vec2::new(60.0, 60.0),
+                0.8,
+                Label::Title, // Different label
+                0,
+            ),
+        ];
+
+        OrtSession::nms(&mut layouts, 0.5);
+
+        // Both should be kept since labels are different
+        assert_eq!(layouts.len(), 2);
+        assert_eq!(layouts[0].proba, 0.9);
+        assert_eq!(layouts[1].proba, 0.8);
+    }
+
+    #[test]
+    fn test_nms_containment_lower_confidence_container() {
+        // Test containment when container has lower confidence than contained
+        let mut layouts = vec![
+            // Smaller bbox with higher confidence - should be kept
+            create_test_layout(
+                Vec2::new(50.0, 50.0),
+                Vec2::new(60.0, 60.0),
+                0.9,
+                Label::Text,
+                0,
+            ),
+            // Larger bbox with lower confidence that contains the first - should be suppressed
+            create_test_layout(
+                Vec2::new(50.0, 50.0),
+                Vec2::new(100.0, 100.0),
+                0.8,
+                Label::Text, // Same label
+                0,
+            ),
+        ];
+
+        OrtSession::nms(&mut layouts, 0.5);
+
+        // Only the higher confidence bbox should remain (the smaller one)
+        assert_eq!(layouts.len(), 1);
+        assert_eq!(layouts[0].proba, 0.9);
+        assert_eq!(layouts[0].bbox.area(), 3600.0); // 60x60
+    }
+
+    #[test]
+    fn test_nms_partial_overlap_no_containment() {
+        // Test that partial overlap without containment uses IoU threshold
+        let mut layouts = vec![
+            create_test_layout(
+                Vec2::new(50.0, 50.0), // Center at (50, 50)
+                Vec2::new(60.0, 60.0), // Size 60x60, bbox (20,20) to (80,80)
+                0.9,
+                Label::Text,
+                0,
+            ),
+            create_test_layout(
+                Vec2::new(70.0, 70.0), // Center at (70, 70)
+                Vec2::new(60.0, 60.0), // Size 60x60, bbox (40,40) to (100,100)
+                0.8,                   // Overlap but no containment
+                Label::Text,           // Same label
+                0,
+            ),
+        ];
+
+        // With IoU threshold 0.5, these should both be kept (IoU < 0.5)
+        OrtSession::nms(&mut layouts, 0.5);
+        assert_eq!(layouts.len(), 2);
+
+        // With lower IoU threshold 0.2, second should be suppressed
+        let mut layouts2 = vec![
+            create_test_layout(
+                Vec2::new(50.0, 50.0),
+                Vec2::new(60.0, 60.0),
+                0.9,
+                Label::Text,
+                0,
+            ),
+            create_test_layout(
+                Vec2::new(70.0, 70.0),
+                Vec2::new(60.0, 60.0),
+                0.8,
+                Label::Text,
+                0,
+            ),
+        ];
+        OrtSession::nms(&mut layouts2, 0.2);
+        assert_eq!(layouts2.len(), 1);
+        assert_eq!(layouts2[0].proba, 0.9);
+    }
+
+    #[test]
+    fn test_nms_mixed_containment_and_iou() {
+        // Test complex scenario with both containment and IoU suppression
+        let mut layouts = vec![
+            // Large container with highest confidence
+            create_test_layout(
+                Vec2::new(100.0, 100.0),
+                Vec2::new(200.0, 200.0), // (0,0) to (200,200)
+                0.95,
+                Label::Text,
+                0,
+            ),
+            // Small contained box - should be suppressed by containment
+            create_test_layout(
+                Vec2::new(100.0, 100.0),
+                Vec2::new(100.0, 100.0), // (50,50) to (150,150)
+                0.85,
+                Label::Text, // Same label
+                0,
+            ),
+            // Separate high-confidence box
+            create_test_layout(
+                Vec2::new(300.0, 300.0),
+                Vec2::new(80.0, 80.0),
+                0.9,
+                Label::Title,
+                0,
+            ),
+            // Box overlapping with third but different label - should be kept
+            create_test_layout(
+                Vec2::new(320.0, 320.0),
+                Vec2::new(80.0, 80.0),
+                0.8,
+                Label::Picture, // Different label
+                0,
+            ),
+            // Box with high IoU overlap with first but different label - should be kept
+            create_test_layout(
+                Vec2::new(110.0, 110.0),
+                Vec2::new(180.0, 180.0),
+                0.7,
+                Label::Table, // Different label
+                0,
+            ),
+        ];
+
+        OrtSession::nms(&mut layouts, 0.5);
+
+        // Should keep: 1st (highest confidence), 3rd (separate), 4th (different label), 5th (different label)
+        // Should suppress: 2nd (contained by 1st with same label)
+        assert_eq!(layouts.len(), 4);
+
+        // Check that the suppressed layout is not present
+        for layout in &layouts {
+            // The contained layout with confidence 0.85 should be gone
+            assert_ne!(layout.proba, 0.85);
+        }
+
+        // Check that all different label combinations are preserved
+        let labels: Vec<_> = layouts.iter().map(|l| l.label.clone()).collect();
+        assert!(labels.contains(&Label::Text));
+        assert!(labels.contains(&Label::Title));
+        assert!(labels.contains(&Label::Picture));
+        assert!(labels.contains(&Label::Table));
     }
 }

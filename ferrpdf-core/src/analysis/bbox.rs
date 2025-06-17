@@ -268,6 +268,37 @@ impl Bbox {
         self.max.x = self.max.x.min(max_bounds.x);
         self.max.y = self.max.y.min(max_bounds.y);
     }
+
+    /// Checks if this bounding box completely contains another bounding box.
+    ///
+    /// A bounding box is considered to contain another if all four corners
+    /// of the contained box are within or on the boundary of the containing box.
+    ///
+    /// # Arguments
+    /// * `other` - The bounding box to check for containment
+    ///
+    /// # Returns
+    /// `true` if this bounding box completely contains the other box, `false` otherwise
+    ///
+    /// # Example
+    /// ```
+    /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
+    ///
+    /// let outer = Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0));
+    /// let inner = Bbox::new(Vec2::new(2.0, 3.0), Vec2::new(7.0, 8.0));
+    /// let separate = Bbox::new(Vec2::new(12.0, 12.0), Vec2::new(15.0, 15.0));
+    ///
+    /// assert!(outer.contains(&inner));   // outer contains inner
+    /// assert!(!inner.contains(&outer));  // inner does not contain outer
+    /// assert!(!outer.contains(&separate)); // outer does not contain separate
+    /// ```
+    pub fn contains(&self, other: &Self) -> bool {
+        self.min.x <= other.min.x
+            && self.min.y <= other.min.y
+            && self.max.x >= other.max.x
+            && self.max.y >= other.max.y
+    }
 }
 
 #[cfg(test)]
@@ -638,5 +669,61 @@ mod tests {
         custom_bbox.clamp_mut(custom_min, custom_max);
         assert_eq!(custom_bbox.min, glam::Vec2::new(10.0, 20.0));
         assert_eq!(custom_bbox.max, glam::Vec2::new(100.0, 200.0));
+    }
+
+    #[test]
+    fn test_bbox_contains() {
+        // Test complete containment
+        let outer = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(10.0, 10.0));
+        let inner = Bbox::new(glam::Vec2::new(2.0, 3.0), glam::Vec2::new(7.0, 8.0));
+        assert!(outer.contains(&inner));
+        assert!(!inner.contains(&outer));
+
+        // Test identical boxes (should contain each other)
+        let bbox1 = Bbox::new(glam::Vec2::new(1.0, 1.0), glam::Vec2::new(5.0, 5.0));
+        let bbox2 = Bbox::new(glam::Vec2::new(1.0, 1.0), glam::Vec2::new(5.0, 5.0));
+        assert!(bbox1.contains(&bbox2));
+        assert!(bbox2.contains(&bbox1));
+
+        // Test edge touching (should contain)
+        let container = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(10.0, 10.0));
+        let edge_box = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(10.0, 10.0));
+        assert!(container.contains(&edge_box));
+
+        // Test partial overlap but not containment
+        let bbox3 = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(5.0, 5.0));
+        let bbox4 = Bbox::new(glam::Vec2::new(3.0, 3.0), glam::Vec2::new(8.0, 8.0));
+        assert!(!bbox3.contains(&bbox4));
+        assert!(!bbox4.contains(&bbox3));
+
+        // Test completely separate boxes
+        let separate1 = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(2.0, 2.0));
+        let separate2 = Bbox::new(glam::Vec2::new(5.0, 5.0), glam::Vec2::new(7.0, 7.0));
+        assert!(!separate1.contains(&separate2));
+        assert!(!separate2.contains(&separate1));
+
+        // Test one dimension contained, other not
+        let wide = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(10.0, 2.0));
+        let tall = Bbox::new(glam::Vec2::new(1.0, 0.0), glam::Vec2::new(3.0, 5.0));
+        assert!(!wide.contains(&tall)); // tall extends beyond wide in y
+        assert!(!tall.contains(&wide)); // wide extends beyond tall in x
+
+        // Test with negative coordinates
+        let neg_outer = Bbox::new(glam::Vec2::new(-10.0, -10.0), glam::Vec2::new(0.0, 0.0));
+        let neg_inner = Bbox::new(glam::Vec2::new(-5.0, -7.0), glam::Vec2::new(-2.0, -1.0));
+        assert!(neg_outer.contains(&neg_inner));
+        assert!(!neg_inner.contains(&neg_outer));
+
+        // Test point-like bbox (zero area)
+        let point = Bbox::new(glam::Vec2::new(5.0, 5.0), glam::Vec2::new(5.0, 5.0));
+        let container_point = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(10.0, 10.0));
+        assert!(container_point.contains(&point));
+        assert!(!point.contains(&container_point));
+
+        // Test floating point precision
+        let precise1 = Bbox::new(glam::Vec2::new(0.1, 0.1), glam::Vec2::new(9.9, 9.9));
+        let precise2 = Bbox::new(glam::Vec2::new(0.2, 0.2), glam::Vec2::new(9.8, 9.8));
+        assert!(precise1.contains(&precise2));
+        assert!(!precise2.contains(&precise1));
     }
 }
