@@ -26,10 +26,12 @@ pub const FONT: &[u8] = include_bytes!("../../../fonts/DejaVuSans.ttf");
 
 /// ONNX Runtime session wrapper for YOLOv12 document layout detection
 pub struct OrtSession {
-    /// Name of the primary output tensor from the model
-    pub output: String,
     /// The underlying ONNX Runtime session
     pub session: Session,
+    /// Name of the primary output tensor from the model
+    pub output: String,
+    /// Name of the primary input tensor from the model
+    pub input: String,
 }
 
 impl OrtSession {
@@ -77,7 +79,18 @@ impl OrtSession {
             .cloned()
             .unwrap_or("output0".to_string());
 
-        Ok(Self { output, session })
+        let input = session
+            .inputs
+            .first()
+            .map(|output| &output.name)
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(Self {
+            output,
+            session,
+            input,
+        })
     }
 
     /// Preprocesses an image for model input by resizing, normalizing, and converting to tensor format.
@@ -250,7 +263,7 @@ impl OrtSession {
         let output = self
             .session
             .run(ort::inputs![
-                "images"=> TensorRef::from_array_view(&input).context(TensorSnafu{stage: "input"})?
+                &self.input => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "input"})?
             ])
             .context(InferenceSnafu {})?;
 
