@@ -52,6 +52,11 @@ impl OrtSession {
                         .with_model_format(CoreMLModelFormat::MLProgram)
                         .build()
                 },
+                #[cfg(all(feature = "cuda"))]
+                {
+                    use ort::execution_providers::CUDAExecutionProvider;
+                    CUDAExecutionProvider::default().build()
+                },
                 CPUExecutionProvider::default().build(),
             ])
             .context(OrtInitSnafu {
