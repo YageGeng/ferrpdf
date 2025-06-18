@@ -1,0 +1,12 @@
+[default]
+extend-ignore-identifiers-re = ["doc_sou.*re_path", "typ", "_ba"]
+
+[default.extend-words]
+# builded = "built"
+
+[type.po]
+extend-glob = ["*.po"]
+check-file = false
+
+[files]
+extend-exclude = ["*.lock", "*.toml", "*.log"]
