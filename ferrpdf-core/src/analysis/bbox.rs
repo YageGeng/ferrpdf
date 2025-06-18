@@ -1,8 +1,10 @@
+use serde::Serialize;
+
 /// A 2D axis-aligned bounding box represented by minimum and maximum points.
 ///
 /// This structure is commonly used in computer graphics and computer vision
 /// for collision detection, object detection, and spatial queries.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct Bbox {
     /// The minimum point of the bounding box (bottom-left corner).
     pub min: glam::Vec2,
@@ -374,6 +376,11 @@ impl Bbox {
         } else {
             0.0
         }
+    }
+
+    pub fn scale(&mut self, scale: f32) {
+        self.min *= scale;
+        self.max *= scale;
     }
 }
 

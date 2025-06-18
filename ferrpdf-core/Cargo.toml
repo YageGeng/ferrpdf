@@ -4,26 +4,30 @@ version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "layout"
-path = "src/bin/layout.rs"
-
-[[bin]]
-name = "pdf2img"
-path = "src/bin/pdf2img.rs"
+name = "analyze"
+path = "src/bin/analyze.rs"
 
 [dependencies]
-glam = "0.30"
+ab_glyph = "0.2"
+clap = { version = "4.5", features = ["derive"] }
+glam = {version = "0.30",features=["serde"]}
 image = "0.25"
 imageproc = "0.25"
 ndarray = "0.16"
 ort = { version = "=2.0.0-rc.10" }
 pdfium-render = { version = "=0.8.27", features = ["bindings", "sync"] }
-ab_glyph = "0.2"
 snafu = { version = "0.8", features = ["rust_1_81"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 [build-dependencies]
 flate2 = "1.0"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "blocking",
+  "json",
+  "rustls-tls",
+] }
 tar = "0.4"
