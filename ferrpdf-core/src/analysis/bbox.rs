@@ -25,6 +25,7 @@ impl Bbox {
     /// use ferrpdf_core::analysis::bbox::Bbox;
     /// let bbox = Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(10.0, 5.0));
     /// ```
+    #[inline(always)]
     pub fn new(min: glam::Vec2, max: glam::Vec2) -> Self {
         Self { min, max }
     }
@@ -42,6 +43,7 @@ impl Bbox {
     /// let bbox = Bbox::new_from_min_size(Vec2::new(1.0, 2.0), Vec2::new(5.0, 3.0));
     /// // Creates a bbox from (1,2) to (6,5)
     /// ```
+    #[inline(always)]
     pub fn new_from_min_size(min: glam::Vec2, size: glam::Vec2) -> Self {
         Self {
             min,
@@ -66,6 +68,7 @@ impl Bbox {
     /// let bbox = Bbox::from_center_size(Vec2::new(100.0, 200.0), Vec2::new(50.0, 80.0));
     /// // Results in bbox from (75, 160) to (125, 240)
     /// ```
+    #[inline(always)]
     pub fn from_center_size(center: glam::Vec2, size: glam::Vec2) -> Self {
         let half_size = size / 2.0;
         // TODO: Bad Case
@@ -87,6 +90,7 @@ impl Bbox {
     /// let bbox = Bbox::new_from_min_size(Vec2::ZERO, Vec2::new(4.0, 3.0));
     /// assert_eq!(bbox.area(), 12.0);
     /// ```
+    #[inline(always)]
     pub fn area(&self) -> f32 {
         let length = self.max - self.min;
 
@@ -105,6 +109,7 @@ impl Bbox {
     /// let bbox = Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(4.0, 2.0));
     /// assert_eq!(bbox.center(), Vec2::new(2.0, 1.0));
     /// ```
+    #[inline(always)]
     pub fn center(&self) -> glam::Vec2 {
         (self.min + self.max) / 2.0
     }
@@ -135,6 +140,7 @@ impl Bbox {
     /// let bbox2 = Bbox::new(Vec2::new(2.0, 2.0), Vec2::new(6.0, 6.0));
     /// assert_eq!(bbox1.intersection(&bbox2), 4.0); // 2x2 intersection area
     /// ```
+    #[inline(always)]
     pub fn intersection(&self, other: &Self) -> f32 {
         let min = self.min.max(other.min);
         let max = self.max.min(other.max);
@@ -172,6 +178,7 @@ impl Bbox {
     /// let bbox2 = Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(2.0, 2.0));
     /// assert_eq!(bbox1.iou(&bbox2), 1.0); // Identical boxes
     /// ```
+    #[inline(always)]
     pub fn iou(&self, other: &Self) -> f32 {
         let intersection_area = self.intersection(other);
         let union_area = self.area() + other.area() - intersection_area;
@@ -210,6 +217,7 @@ impl Bbox {
     /// assert_eq!(cartesian_bbox.min, Vec2::new(10.0, 20.0));
     /// assert_eq!(cartesian_bbox.max, Vec2::new(50.0, 80.0));
     /// ```
+    #[inline(always)]
     pub fn to_cartesian(&self, image_height: f32) -> Self {
         let cartesian_min = glam::Vec2::new(self.min.x, image_height - self.max.y);
         let cartesian_max = glam::Vec2::new(self.max.x, image_height - self.min.y);
@@ -239,6 +247,7 @@ impl Bbox {
     /// assert_eq!(clamped.min, Vec2::new(0.0, 0.0));
     /// assert_eq!(clamped.max, Vec2::new(1023.0, 1023.0));
     /// ```
+    #[inline(always)]
     pub fn clamp(&self, min_bounds: glam::Vec2, max_bounds: glam::Vec2) -> Self {
         Self {
             min: self.min.max(min_bounds),
@@ -264,6 +273,7 @@ impl Bbox {
     /// assert_eq!(bbox.min, Vec2::new(0.0, 0.0));
     /// assert_eq!(bbox.max, Vec2::new(1023.0, 1023.0));
     /// ```
+    #[inline(always)]
     pub fn clamp_mut(&mut self, min_bounds: glam::Vec2, max_bounds: glam::Vec2) {
         self.min.x = self.min.x.max(min_bounds.x);
         self.min.y = self.min.y.max(min_bounds.y);
@@ -295,6 +305,7 @@ impl Bbox {
     /// assert!(!inner.contains(&outer));  // inner does not contain outer
     /// assert!(!outer.contains(&separate)); // outer does not contain separate
     /// ```
+    #[inline(always)]
     pub fn contains(&self, other: &Self) -> bool {
         self.min.x <= other.min.x
             && self.min.y <= other.min.y
@@ -326,6 +337,7 @@ impl Bbox {
     /// assert_eq!(union.min, Vec2::new(0.0, 0.0));
     /// assert_eq!(union.max, Vec2::new(8.0, 8.0));
     /// ```
+    #[inline(always)]
     pub fn union(&self, other: &Self) -> Self {
         Self {
             min: self.min.min(other.min),
@@ -367,6 +379,7 @@ impl Bbox {
     /// let iou = large.iou(&small);
     /// assert!(overlap_ratio > iou); // More lenient than IoU
     /// ```
+    #[inline(always)]
     pub fn overlap_ratio(&self, other: &Self) -> f32 {
         let intersection_area = self.intersection(other);
         let min_area = self.area().min(other.area());
@@ -378,6 +391,7 @@ impl Bbox {
         }
     }
 
+    #[inline(always)]
     pub fn scale(&mut self, scale: f32) {
         self.min *= scale;
         self.max *= scale;

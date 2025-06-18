@@ -391,78 +391,50 @@ impl OrtSession {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // Store original bboxes to avoid using modified bboxes during comparison
-        let original_bboxes: Vec<Bbox> = raw_layouts.iter().map(|l| l.bbox).collect();
-
         let mut keep_flags = vec![true; raw_layouts.len()];
-        let mut merge_operations = Vec::new(); // (merge_from_idx, merge_to_idx)
 
-        #[allow(clippy::needless_range_loop)]
+        // Process each layout and check for merges with previous kept layouts
         for current_index in 0..raw_layouts.len() {
             if !keep_flags[current_index] {
                 continue; // Already marked for removal
             }
 
-            // Compare current detection with all previously kept detections
+            let current_bbox = raw_layouts[current_index].bbox;
+
+            // Check against all previously processed layouts that are still kept
             for kept_index in 0..current_index {
-                // Dont skip already suppressed detections, maybe other will merge into it
-                // if !keep_flags[kept_index] {
-                //     continue; // Skip already suppressed detections
-                // }
-
-                // Use original bboxes for comparison to avoid repeated expansion
-                let current_bbox = original_bboxes[current_index];
-                let kept_bbox = original_bboxes[kept_index];
-
-                // Check if one bbox contains the other (regardless of label)
-                // If kept bbox contains current bbox, merge current into kept
-                if kept_bbox.contains(&current_bbox) {
-                    merge_operations.push((current_index, kept_index));
-                    keep_flags[current_index] = false;
-                    break;
+                if !keep_flags[kept_index] {
+                    continue; // Skip layouts that were already merged/removed
                 }
 
-                // If current bbox contains kept bbox, merge current into kept (kept has higher confidence)
-                if current_bbox.contains(&kept_bbox) {
-                    merge_operations.push((current_index, kept_index));
-                    keep_flags[current_index] = false;
-                    break;
-                }
+                let overlap_ratio = current_bbox.overlap_ratio(&raw_layouts[kept_index].bbox);
 
-                let iou = current_bbox.iou(&kept_bbox);
-                let overlap_ratio = current_bbox.overlap_ratio(&kept_bbox);
-
-                // If IoU exceeds threshold OR overlap ratio is high (indicating small bbox in large bbox),
-                // merge current into kept detection. Use more lenient overlap_ratio threshold.
+                // If overlap ratio is high, merge current into kept detection
                 // Since array is sorted by confidence, kept detections have higher confidence
-                if iou > iou_threshold || overlap_ratio > iou_threshold {
-                    merge_operations.push((current_index, kept_index));
+                if overlap_ratio > iou_threshold {
+                    // Merge the bbox by taking the union - update the kept layout's bbox
+                    raw_layouts[kept_index].bbox =
+                        raw_layouts[kept_index].bbox.union(&current_bbox);
+                    // Mark current layout for removal
                     keep_flags[current_index] = false;
                     break;
                 }
             }
         }
 
-        // Apply all merge operations to expand kept detections
-        for (merge_from_idx, merge_to_idx) in merge_operations {
-            let merge_from_bbox = original_bboxes[merge_from_idx];
-            raw_layouts[merge_to_idx].bbox = raw_layouts[merge_to_idx].bbox.union(&merge_from_bbox);
-        }
-
-        // Keep only the detections that weren't merged into others
-        let mut keep_index = 0;
-        #[allow(clippy::needless_range_loop)]
-        for current_index in 0..raw_layouts.len() {
-            if keep_flags[current_index] {
-                if keep_index != current_index {
-                    raw_layouts.swap(keep_index, current_index);
+        // Remove layouts marked for deletion by swapping with kept ones
+        let mut write_index = 0;
+        for (read_index, keep_flag) in keep_flags.iter().enumerate().take(raw_layouts.len()) {
+            if *keep_flag {
+                if write_index != read_index {
+                    raw_layouts.swap(write_index, read_index);
                 }
-                keep_index += 1;
+                write_index += 1;
             }
         }
 
-        // Truncate to remove suppressed elements
-        raw_layouts.truncate(keep_index);
+        // Truncate to remove the elements that were swapped to the end
+        raw_layouts.truncate(write_index);
     }
 
     /// Sorts layout elements by reading order: top-to-bottom, left-to-right.
@@ -1861,5 +1833,66 @@ mod tests {
         // The bbox should be the union of all three original bboxes
         assert_eq!(layouts[0].bbox.min, Vec2::new(100.0, 100.0));
         assert_eq!(layouts[0].bbox.max, Vec2::new(900.0, 900.0));
+    }
+
+    #[test]
+    fn test_nms_real_world_overlap_case() {
+        // Test case reproducing the real-world overlap issue from PDF analysis
+        let mut layouts = vec![
+            // First text bbox (higher confidence, should be kept)
+            Layout {
+                bbox: Bbox::new(
+                    Vec2::new(71.18383, 433.75845),
+                    Vec2::new(529.01666, 717.15393),
+                ),
+                label: Label::Text,
+                page_no: 0,
+                bbox_id: 109,
+                proba: 0.93062717,
+                text: None,
+            },
+            // Second text bbox (lower confidence, overlaps with first, should be merged)
+            Layout {
+                bbox: Bbox::new(
+                    Vec2::new(71.20912, 433.96475),
+                    Vec2::new(528.23706, 566.81287),
+                ),
+                label: Label::Text,
+                page_no: 0,
+                bbox_id: 95,
+                proba: 0.8489393,
+                text: None,
+            },
+        ];
+
+        // Calculate overlap before NMS
+        let overlap_ratio = layouts[1].bbox.overlap_ratio(&layouts[0].bbox);
+        let iou = layouts[1].bbox.iou(&layouts[0].bbox);
+
+        // The smaller bbox should be completely contained in the larger one
+        assert!(
+            overlap_ratio > 0.9,
+            "overlap_ratio should be > 0.9, got {}",
+            overlap_ratio
+        );
+        assert!(iou > 0.4, "iou should be > 0.4, got {}", iou);
+
+        // Apply NMS with threshold 0.45
+        OrtSession::nms(&mut layouts, 0.45);
+
+        // Should have only 1 layout remaining (the one with higher confidence)
+        assert_eq!(
+            layouts.len(),
+            1,
+            "Expected 1 layout after NMS, got {}",
+            layouts.len()
+        );
+        assert_eq!(layouts[0].proba, 0.93062717, "Wrong layout kept after NMS");
+
+        // The remaining bbox should be the union of both original bboxes
+        let expected_min = Vec2::new(71.18383, 433.75845);
+        let expected_max = Vec2::new(529.01666, 717.15393);
+        assert_eq!(layouts[0].bbox.min, expected_min);
+        assert_eq!(layouts[0].bbox.max, expected_max);
     }
 }

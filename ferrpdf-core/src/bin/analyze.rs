@@ -282,10 +282,6 @@ fn convert_image_bbox_to_pdf_rect(bbox: &mut Bbox, page_size: (f32, f32), scale:
     let rescale = 1. / scale;
 
     bbox.scale(rescale);
-    bbox.min.x *= rescale;
-    bbox.min.y *= rescale;
-    bbox.max.x *= rescale;
-    bbox.max.y *= rescale;
 
     let pdf_min_x = bbox.min.x;
     let pdf_max_x = bbox.max.x;
@@ -294,16 +290,6 @@ fn convert_image_bbox_to_pdf_rect(bbox: &mut Bbox, page_size: (f32, f32), scale:
 
     let pdf_bottom = pdf_height - pdf_max_y;
     let pdf_top = pdf_height - pdf_min_y;
-
-    // println!("H: {:.2}, W: {:.2}", pdf_height, pdf_width);
-    // println!(
-    //     "x1 {:.2}, y1 {:.2}, x2 {:.2}, y2 {:.2}",
-    //     pdf_min_x, pdf_max_x, pdf_min_y, pdf_max_y
-    // );
-    // println!(
-    //     "x1 {:.2}, y1 {:.2}, x2 {:.2}, y2 {:.2}",
-    //     pdf_min_x, pdf_bottom, pdf_max_x, pdf_top
-    // );
 
     PdfRect::new(
         PdfPoints::new(pdf_bottom),
