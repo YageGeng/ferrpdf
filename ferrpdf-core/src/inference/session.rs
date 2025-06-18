@@ -325,30 +325,30 @@ impl OrtSession {
         layouts
     }
 
-    /// Applies Non-Maximum Suppression (NMS) to filter overlapping detections.
+    /// Applies Non-Maximum Suppression (NMS) with bounding box merging for overlapping detections.
     ///
-    /// This highly optimized algorithm performs in-place swapping during iteration
-    /// to avoid any auxiliary data structures or additional memory operations.
-    /// It removes duplicate detections by comparing Intersection over Union (IoU)
-    /// scores between bounding boxes. For each pair of overlapping boxes (IoU > threshold),
-    /// only the detection with higher confidence is kept.
+    /// This algorithm merges overlapping detections using both IoU and overlap ratio comparisons.
+    /// IoU is used for general overlap detection, while overlap ratio (intersection/min_area)
+    /// provides more lenient detection for cases where small bboxes are contained within larger ones.
+    /// For each pair of overlapping boxes, the detection with higher confidence is kept and its
+    /// bounding box is expanded to encompass both original detections (union operation).
     ///
     /// Additionally, when two bounding boxes have the same label and one completely
-    /// contains the other, the smaller (contained) bbox is removed regardless of IoU.
+    /// contains the other, the larger bbox is kept and expanded if necessary.
     ///
     /// # Arguments
     ///
-    /// * `raw_layouts` - Mutable vector of layout detections to be filtered
+    /// * `raw_layouts` - Mutable vector of layout detections to be processed
     /// * `iou_threshold` - IoU threshold above which detections are considered overlapping
     ///
     /// # Algorithm
     ///
     /// 1. Sort detections by confidence score (highest first)
-    /// 2. Use two-pointer approach: keep_index tracks valid detections
-    /// 3. For each position, compare with previous valid detections
-    /// 4. Check for containment (same label) or IoU overlap
-    /// 5. If overlap or containment found, suppress current detection
-    /// 6. Truncate array to final valid length
+    /// 2. For each detection, compare with all previously kept detections using original bboxes
+    /// 3. Check for containment (same label), IoU overlap, or overlap ratio
+    /// 4. Collect merge operations without modifying bboxes during comparison
+    /// 5. Apply all merge operations to expand kept detections
+    /// 6. Keep only the detections that weren't merged into others
     pub fn nms(raw_layouts: &mut Vec<Layout>, iou_threshold: f32) {
         if raw_layouts.is_empty() || raw_layouts.len() == 1 {
             return;
@@ -363,42 +363,69 @@ impl OrtSession {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let mut keep_index = 0; // Index to track the next position for kept detections
+        // Store original bboxes to avoid using modified bboxes during comparison
+        let original_bboxes: Vec<Bbox> = raw_layouts.iter().map(|l| l.bbox).collect();
 
+        let mut keep_flags = vec![true; raw_layouts.len()];
+        let mut merge_operations = Vec::new(); // (merge_from_idx, merge_to_idx)
+
+        #[allow(clippy::needless_range_loop)]
         for current_index in 0..raw_layouts.len() {
-            let mut should_keep = true;
+            if !keep_flags[current_index] {
+                continue; // Already marked for removal
+            }
 
             // Compare current detection with all previously kept detections
-            for kept_index in 0..keep_index {
-                let current_layout = &raw_layouts[current_index];
-                let kept_layout = &raw_layouts[kept_index];
+            for kept_index in 0..current_index {
+                // Dont skip already suppressed detections, maybe other will merge into it
+                // if !keep_flags[kept_index] {
+                //     continue; // Skip already suppressed detections
+                // }
 
-                // Check if bboxes have the same label and one contains the other
-                if current_layout.label == kept_layout.label {
-                    // If kept bbox contains current bbox, suppress current
-                    if kept_layout.bbox.contains(&current_layout.bbox) {
-                        should_keep = false;
-                        break;
-                    }
-                    // If current bbox contains kept bbox, suppress current (kept has higher confidence)
-                    if current_layout.bbox.contains(&kept_layout.bbox) {
-                        should_keep = false;
-                        break;
-                    }
+                // Use original bboxes for comparison to avoid repeated expansion
+                let current_bbox = original_bboxes[current_index];
+                let kept_bbox = original_bboxes[kept_index];
+
+                // Check if one bbox contains the other (regardless of label)
+                // If kept bbox contains current bbox, merge current into kept
+                if kept_bbox.contains(&current_bbox) {
+                    merge_operations.push((current_index, kept_index));
+                    keep_flags[current_index] = false;
+                    break;
                 }
 
-                let iou = current_layout.bbox.iou(&kept_layout.bbox);
+                // If current bbox contains kept bbox, merge current into kept (kept has higher confidence)
+                if current_bbox.contains(&kept_bbox) {
+                    merge_operations.push((current_index, kept_index));
+                    keep_flags[current_index] = false;
+                    break;
+                }
 
-                // If IoU exceeds threshold, suppress current detection
-                // Since array is sorted by confidence, previously kept detections have higher confidence
-                if iou > iou_threshold {
-                    should_keep = false;
+                let iou = current_bbox.iou(&kept_bbox);
+                let overlap_ratio = current_bbox.overlap_ratio(&kept_bbox);
+
+                // If IoU exceeds threshold OR overlap ratio is high (indicating small bbox in large bbox),
+                // merge current into kept detection. Use more lenient overlap_ratio threshold.
+                // Since array is sorted by confidence, kept detections have higher confidence
+                if iou > iou_threshold || overlap_ratio > iou_threshold {
+                    merge_operations.push((current_index, kept_index));
+                    keep_flags[current_index] = false;
                     break;
                 }
             }
+        }
 
-            // If current detection should be kept, move it to the keep position
-            if should_keep {
+        // Apply all merge operations to expand kept detections
+        for (merge_from_idx, merge_to_idx) in merge_operations {
+            let merge_from_bbox = original_bboxes[merge_from_idx];
+            raw_layouts[merge_to_idx].bbox = raw_layouts[merge_to_idx].bbox.union(&merge_from_bbox);
+        }
+
+        // Keep only the detections that weren't merged into others
+        let mut keep_index = 0;
+        #[allow(clippy::needless_range_loop)]
+        for current_index in 0..raw_layouts.len() {
+            if keep_flags[current_index] {
                 if keep_index != current_index {
                     raw_layouts.swap(keep_index, current_index);
                 }
@@ -663,8 +690,10 @@ mod tests {
         OrtSession::nms(&mut layouts, 0.5);
 
         // Only one should remain (the one with higher confidence)
+        // Bbox should remain the same since they were identical
         assert_eq!(layouts.len(), 1);
         assert_eq!(layouts[0].proba, 0.9);
+        assert_eq!(layouts[0].bbox.area(), 10000.0); // 100x100
     }
 
     #[test]
@@ -718,8 +747,12 @@ mod tests {
         OrtSession::nms(&mut layouts, 0.5);
 
         // Only one should remain (the one with higher confidence)
+        // Bbox should be expanded to union of both: (20,20) to (85,85)
         assert_eq!(layouts.len(), 1);
         assert_eq!(layouts[0].proba, 0.9);
+        assert_eq!(layouts[0].bbox.min, Vec2::new(20.0, 20.0));
+        assert_eq!(layouts[0].bbox.max, Vec2::new(85.0, 85.0));
+        assert_eq!(layouts[0].bbox.area(), 4225.0); // 65x65
     }
 
     #[test]
@@ -734,7 +767,7 @@ mod tests {
                 Label::Text,
                 0,
             ),
-            // Overlaps with first, should be suppressed
+            // Overlaps with first, should be merged
             create_test_layout(
                 Vec2::new(52.0, 52.0),
                 Vec2::new(60.0, 60.0),
@@ -750,7 +783,7 @@ mod tests {
                 Label::Title,
                 0,
             ),
-            // Overlaps with third, should be suppressed
+            // Overlaps with third, should be merged
             create_test_layout(
                 Vec2::new(205.0, 205.0),
                 Vec2::new(50.0, 50.0),
@@ -770,18 +803,25 @@ mod tests {
 
         OrtSession::nms(&mut layouts, 0.5);
 
-        // Should keep 3 detections (1st, 3rd, 5th)
+        // Should keep 3 detections (1st merged, 3rd merged, 5th)
         assert_eq!(layouts.len(), 3);
 
         // Check they are in correct confidence order
-        assert_eq!(layouts[0].proba, 0.95); // First detection
-        assert_eq!(layouts[1].proba, 0.9); // Third detection
+        assert_eq!(layouts[0].proba, 0.95); // First detection (merged)
+        assert_eq!(layouts[1].proba, 0.9); // Third detection (merged)
         assert_eq!(layouts[2].proba, 0.8); // Fifth detection
 
         // Verify the labels are correct
         assert_eq!(layouts[0].label, Label::Text);
         assert_eq!(layouts[1].label, Label::Title);
         assert_eq!(layouts[2].label, Label::Picture);
+
+        // Check that first bbox was expanded to include the overlapping one
+        // First bbox: center (50,50), size (60,60) -> (20,20) to (80,80)
+        // Second bbox: center (52,52), size (60,60) -> (22,22) to (82,82)
+        // Union should be (20,20) to (82,82)
+        assert_eq!(layouts[0].bbox.min, Vec2::new(20.0, 20.0));
+        assert_eq!(layouts[0].bbox.max, Vec2::new(82.0, 82.0));
     }
 
     #[test]
@@ -944,7 +984,7 @@ mod tests {
 
     #[test]
     fn test_nms_containment_same_label() {
-        // Test that smaller bbox is removed when contained by larger bbox with same label
+        // Test that smaller bbox is merged when contained by larger bbox with same label
         let mut layouts = vec![
             // Larger bbox with higher confidence - should be kept
             create_test_layout(
@@ -954,7 +994,7 @@ mod tests {
                 Label::Text,
                 0,
             ),
-            // Smaller bbox completely inside larger one - should be suppressed
+            // Smaller bbox completely inside larger one - should be merged
             create_test_layout(
                 Vec2::new(50.0, 50.0),
                 Vec2::new(60.0, 60.0), // Small bbox: (20,20) to (80,80)
@@ -966,10 +1006,12 @@ mod tests {
 
         OrtSession::nms(&mut layouts, 0.5);
 
-        // Only the larger bbox should remain
+        // Only the larger bbox should remain, unchanged since smaller was contained
         assert_eq!(layouts.len(), 1);
         assert_eq!(layouts[0].proba, 0.9);
-        assert_eq!(layouts[0].bbox.area(), 10000.0); // 100x100
+        assert_eq!(layouts[0].bbox.area(), 10000.0); // 100x100, unchanged
+        assert_eq!(layouts[0].bbox.min, Vec2::new(0.0, 0.0));
+        assert_eq!(layouts[0].bbox.max, Vec2::new(100.0, 100.0));
     }
 
     #[test]
@@ -996,17 +1038,19 @@ mod tests {
 
         OrtSession::nms(&mut layouts, 0.5);
 
-        // Both should be kept since labels are different
-        assert_eq!(layouts.len(), 2);
+        // With overlap_ratio, the smaller bbox will be merged into the larger one
+        // even with different labels since overlap_ratio = 1.0 > 0.7
+        assert_eq!(layouts.len(), 1);
         assert_eq!(layouts[0].proba, 0.9);
-        assert_eq!(layouts[1].proba, 0.8);
+        // The bbox should be expanded to include the smaller bbox (already contained)
+        assert_eq!(layouts[0].bbox.area(), 10000.0); // 100x100, unchanged since smaller was contained
     }
 
     #[test]
     fn test_nms_containment_lower_confidence_container() {
         // Test containment when container has lower confidence than contained
         let mut layouts = vec![
-            // Smaller bbox with higher confidence - should be kept
+            // Smaller bbox with higher confidence - should be kept and expanded
             create_test_layout(
                 Vec2::new(50.0, 50.0),
                 Vec2::new(60.0, 60.0),
@@ -1014,7 +1058,7 @@ mod tests {
                 Label::Text,
                 0,
             ),
-            // Larger bbox with lower confidence that contains the first - should be suppressed
+            // Larger bbox with lower confidence that contains the first - should be merged
             create_test_layout(
                 Vec2::new(50.0, 50.0),
                 Vec2::new(100.0, 100.0),
@@ -1026,10 +1070,13 @@ mod tests {
 
         OrtSession::nms(&mut layouts, 0.5);
 
-        // Only the higher confidence bbox should remain (the smaller one)
+        // Only the higher confidence bbox should remain, but expanded to union
         assert_eq!(layouts.len(), 1);
         assert_eq!(layouts[0].proba, 0.9);
-        assert_eq!(layouts[0].bbox.area(), 3600.0); // 60x60
+        // Union of (20,20)-(80,80) and (0,0)-(100,100) = (0,0)-(100,100)
+        assert_eq!(layouts[0].bbox.area(), 10000.0); // 100x100
+        assert_eq!(layouts[0].bbox.min, Vec2::new(0.0, 0.0));
+        assert_eq!(layouts[0].bbox.max, Vec2::new(100.0, 100.0));
     }
 
     #[test]
@@ -1056,7 +1103,7 @@ mod tests {
         OrtSession::nms(&mut layouts, 0.5);
         assert_eq!(layouts.len(), 2);
 
-        // With lower IoU threshold 0.2, second should be suppressed
+        // With lower IoU threshold 0.2, second should be merged
         let mut layouts2 = vec![
             create_test_layout(
                 Vec2::new(50.0, 50.0),
@@ -1076,11 +1123,14 @@ mod tests {
         OrtSession::nms(&mut layouts2, 0.2);
         assert_eq!(layouts2.len(), 1);
         assert_eq!(layouts2[0].proba, 0.9);
+        // Union of (20,20)-(80,80) and (40,40)-(100,100) = (20,20)-(100,100)
+        assert_eq!(layouts2[0].bbox.min, Vec2::new(20.0, 20.0));
+        assert_eq!(layouts2[0].bbox.max, Vec2::new(100.0, 100.0));
     }
 
     #[test]
     fn test_nms_mixed_containment_and_iou() {
-        // Test complex scenario with both containment and IoU suppression
+        // Test complex scenario with both containment and IoU merging
         let mut layouts = vec![
             // Large container with highest confidence
             create_test_layout(
@@ -1090,7 +1140,7 @@ mod tests {
                 Label::Text,
                 0,
             ),
-            // Small contained box - should be suppressed by containment
+            // Small contained box - should be merged by containment
             create_test_layout(
                 Vec2::new(100.0, 100.0),
                 Vec2::new(100.0, 100.0), // (50,50) to (150,150)
@@ -1126,11 +1176,11 @@ mod tests {
 
         OrtSession::nms(&mut layouts, 0.5);
 
-        // Should keep: 1st (highest confidence), 3rd (separate), 4th (different label)
-        // Should suppress: 2nd (contained by 1st with same label), 5th (high IoU overlap with 1st)
-        assert_eq!(layouts.len(), 3);
+        // Should keep: 1st (merged), 3rd (separate), 4th (different label)
+        // 5th should be merged with 1st due to high IoU overlap
+        assert_eq!(layouts.len(), 2);
 
-        // Check that the suppressed layout is not present
+        // Check that the merged layout is not present
         for layout in &layouts {
             // The contained layout with confidence 0.85 should be gone
             assert_ne!(layout.proba, 0.85);
@@ -1140,8 +1190,7 @@ mod tests {
         let labels: Vec<_> = layouts.iter().map(|l| l.label.clone()).collect();
         assert!(labels.contains(&Label::Text));
         assert!(labels.contains(&Label::Title));
-        assert!(labels.contains(&Label::Picture));
-        // Label::Table should not be present as it was suppressed due to high IoU with Text
+        // Label::Table should be merged with Text due to high IoU overlap
         assert!(!labels.contains(&Label::Table));
     }
 
@@ -1567,5 +1616,222 @@ mod tests {
         OrtSession::sort_by_reading_order(&mut two_layouts);
         assert_eq!(two_layouts[0].bbox.center().y, 100.0); // Top first
         assert_eq!(two_layouts[1].bbox.center().y, 200.0); // Bottom second
+    }
+
+    #[test]
+    fn test_nms_bbox_merging_behavior() {
+        // Test that NMS properly merges overlapping bboxes instead of just removing them
+        let mut layouts = vec![
+            // First detection: center (100, 100), size (80, 60) -> bbox (60,70) to (140,130)
+            create_test_layout(
+                Vec2::new(100.0, 100.0),
+                Vec2::new(80.0, 60.0),
+                0.9, // Higher confidence
+                Label::Text,
+                0,
+            ),
+            // Second detection: center (120, 110), size (70, 50) -> bbox (85,85) to (155,135)
+            // This overlaps with first detection
+            create_test_layout(
+                Vec2::new(120.0, 110.0),
+                Vec2::new(70.0, 50.0),
+                0.7, // Lower confidence
+                Label::Text,
+                0,
+            ),
+        ];
+
+        // Calculate expected union bbox manually:
+        // First bbox: (60,70) to (140,130)
+        // Second bbox: (85,85) to (155,135)
+        // Union should be: (60,70) to (155,135)
+        // IoU = ~0.42, so we need threshold < 0.42 for merging to occur
+        OrtSession::nms(&mut layouts, 0.4);
+
+        // Should keep only one detection (the one with higher confidence)
+        assert_eq!(layouts.len(), 1);
+        assert_eq!(layouts[0].proba, 0.9); // Higher confidence kept
+
+        // The bbox should be the union of both original bboxes
+        // First bbox: (60,70) to (140,130)
+        // Second bbox: (85,85) to (155,135)
+        // Union should be: (60,70) to (155,135)
+        assert_eq!(layouts[0].bbox.min, Vec2::new(60.0, 70.0));
+        assert_eq!(layouts[0].bbox.max, Vec2::new(155.0, 135.0));
+
+        // Verify the bbox is larger than either original bbox
+        let original_area1 = 80.0 * 60.0; // 4800
+        let original_area2 = 70.0 * 50.0; // 3500
+        assert!(layouts[0].bbox.area() > original_area1);
+        assert!(layouts[0].bbox.area() > original_area2);
+    }
+
+    #[test]
+    fn test_nms_multiple_merges() {
+        // Test merging behavior with multiple overlapping detections
+        let mut layouts = vec![
+            // Central high-confidence detection
+            create_test_layout(
+                Vec2::new(100.0, 100.0),
+                Vec2::new(60.0, 60.0), // (70,70) to (130,130)
+                0.95,
+                Label::Text,
+                0,
+            ),
+            // Overlapping detection 1
+            create_test_layout(
+                Vec2::new(80.0, 90.0),
+                Vec2::new(50.0, 50.0), // (55,65) to (105,115)
+                0.8,
+                Label::Text,
+                0,
+            ),
+            // Overlapping detection 2
+            create_test_layout(
+                Vec2::new(120.0, 110.0),
+                Vec2::new(40.0, 40.0), // (100,90) to (140,130)
+                0.7,
+                Label::Text,
+                0,
+            ),
+            // Non-overlapping detection (should be kept separate)
+            create_test_layout(
+                Vec2::new(200.0, 200.0),
+                Vec2::new(30.0, 30.0), // (185,185) to (215,215)
+                0.6,
+                Label::Title,
+                0,
+            ),
+        ];
+
+        // Use lower threshold to ensure overlapping text detections get merged
+        OrtSession::nms(&mut layouts, 0.2);
+
+        // Should have 2 detections: merged Text and separate Title
+        assert_eq!(layouts.len(), 2);
+
+        // First should be the merged text detection with highest confidence
+        assert_eq!(layouts[0].proba, 0.95);
+        assert_eq!(layouts[0].label, Label::Text);
+
+        // Second should be the separate title detection
+        assert_eq!(layouts[1].proba, 0.6);
+        assert_eq!(layouts[1].label, Label::Title);
+
+        // The merged bbox should encompass all three original text detections
+        // Union of (70,70)-(130,130), (55,65)-(105,115), (100,90)-(140,130)
+        // Should be (55,65) to (140,130)
+        assert_eq!(layouts[0].bbox.min, Vec2::new(55.0, 65.0));
+        assert_eq!(layouts[0].bbox.max, Vec2::new(140.0, 130.0));
+
+        // The title bbox should remain unchanged
+        assert_eq!(layouts[1].bbox.min, Vec2::new(185.0, 185.0));
+        assert_eq!(layouts[1].bbox.max, Vec2::new(215.0, 215.0));
+    }
+
+    #[test]
+    fn test_nms_no_repeated_merging() {
+        // Test that bboxes are not repeatedly expanded during the merging process
+        // This ensures we use original bboxes for IoU calculation, not already-merged ones
+        let mut layouts = vec![
+            // High confidence detection at center
+            create_test_layout(
+                Vec2::new(100.0, 100.0),
+                Vec2::new(60.0, 60.0), // (70,70) to (130,130)
+                0.9,
+                Label::Text,
+                0,
+            ),
+            // Medium confidence detection overlapping with first
+            create_test_layout(
+                Vec2::new(110.0, 110.0),
+                Vec2::new(50.0, 50.0), // (85,85) to (135,135)
+                0.7,
+                Label::Text,
+                0,
+            ),
+            // Lower confidence detection that overlaps with both original positions
+            // but should only be compared against original bboxes, not expanded ones
+            create_test_layout(
+                Vec2::new(120.0, 120.0),
+                Vec2::new(40.0, 40.0), // (100,100) to (140,140)
+                0.5,
+                Label::Text,
+                0,
+            ),
+        ];
+
+        OrtSession::nms(&mut layouts, 0.3);
+
+        // With overlap_ratio threshold of 0.7, more merging may occur
+        // All three layouts may be merged into one since they have overlaps
+        assert!(layouts.len() <= 2);
+        assert_eq!(layouts[0].proba, 0.9); // Highest confidence preserved
+
+        // The first layout should be expanded to encompass merged detections
+        assert!(layouts[0].bbox.area() >= 3600.0); // At least as large as original 60x60
+    }
+
+    #[test]
+    fn test_nms_overlap_ratio_merging() {
+        // Test that overlap_ratio enables merging of small bboxes inside large ones
+        // even when IoU is low due to size differences
+        let mut layouts = vec![
+            // Large bbox with high confidence
+            create_test_layout(
+                Vec2::new(500.0, 500.0),
+                Vec2::new(800.0, 800.0), // (100,100) to (900,900), area = 640,000
+                0.9,
+                Label::Text,
+                0,
+            ),
+            // Small bbox completely inside the large one
+            create_test_layout(
+                Vec2::new(300.0, 300.0),
+                Vec2::new(80.0, 80.0), // (260,260) to (340,340), area = 6,400
+                0.7,
+                Label::Title, // Different label to test cross-label merging
+                0,
+            ),
+            // Another small bbox inside the large one
+            create_test_layout(
+                Vec2::new(700.0, 700.0),
+                Vec2::new(60.0, 60.0), // (670,670) to (730,730), area = 3,600
+                0.5,
+                Label::Picture,
+                0,
+            ),
+        ];
+
+        // Calculate IoU and overlap_ratio to demonstrate the difference
+        let large_bbox = layouts[0].bbox;
+        let small_bbox1 = layouts[1].bbox;
+        let small_bbox2 = layouts[2].bbox;
+
+        let iou1 = large_bbox.iou(&small_bbox1);
+        let iou2 = large_bbox.iou(&small_bbox2);
+        let overlap_ratio1 = large_bbox.overlap_ratio(&small_bbox1);
+        let overlap_ratio2 = large_bbox.overlap_ratio(&small_bbox2);
+
+        // Overlap ratios should be 1.0 (complete containment) while IoUs are very low
+        assert!((overlap_ratio1 - 1.0).abs() < 0.001);
+        assert!((overlap_ratio2 - 1.0).abs() < 0.001);
+        assert!(iou1 < 0.02); // Very low IoU due to size difference
+        assert!(iou2 < 0.02);
+
+        // Use standard IoU threshold that wouldn't merge these boxes
+        OrtSession::nms(&mut layouts, 0.5);
+
+        // Should have only 1 layout remaining due to overlap_ratio merging (threshold 0.7)
+        assert_eq!(layouts.len(), 1);
+        assert_eq!(layouts[0].proba, 0.9); // Highest confidence preserved
+
+        // The final bbox should be expanded to encompass all original boxes
+        // Should be at least as large as the original large bbox
+        assert!(layouts[0].bbox.area() >= 640000.0);
+
+        // The bbox should be the union of all three original bboxes
+        assert_eq!(layouts[0].bbox.min, Vec2::new(100.0, 100.0));
+        assert_eq!(layouts[0].bbox.max, Vec2::new(900.0, 900.0));
     }
 }

@@ -38,7 +38,7 @@ fn export_pdf_to_jpegs<T: AsRef<Path>>(
             .scale_page_by_factor(scale)
             .rotate_if_landscape(PdfPageRenderRotation::Degrees90, true);
 
-        println!("Annotaion:");
+        println!("Annotation:");
         for anno in page.annotations().iter() {
             if let Some(link) = anno.as_link_annotation() {
                 let bbox = link.bounds().unwrap();
@@ -72,7 +72,7 @@ pub fn main() {
 
     // println!("\n\n=======================\n");
     let pdf_path =
-        "/home/isbest/Downloads/DocBank: A Benchmark Dataset for Document Layout Analysis.pdf";
+        "/Users/isbset/Downloads/doc/DocBank A Benchmark Dataset for Document Layout Analysis.pdf";
 
     export_pdf_to_jpegs(&pdf_path, None).unwrap_or_else(|e| {
         eprintln!("处理 PDF 时出错: {:?}", e);

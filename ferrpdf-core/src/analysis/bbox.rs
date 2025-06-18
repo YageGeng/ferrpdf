@@ -299,6 +299,82 @@ impl Bbox {
             && self.max.x >= other.max.x
             && self.max.y >= other.max.y
     }
+
+    /// Creates a union bounding box that encompasses both this bounding box and another.
+    ///
+    /// The union bounding box is the smallest axis-aligned rectangle that completely
+    /// contains both input bounding boxes. This is useful for merging overlapping
+    /// detections in object detection algorithms.
+    ///
+    /// # Arguments
+    /// * `other` - The other bounding box to union with
+    ///
+    /// # Returns
+    /// A new `Bbox` that represents the union of both bounding boxes
+    ///
+    /// # Example
+    /// ```
+    /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
+    ///
+    /// let bbox1 = Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(5.0, 5.0));
+    /// let bbox2 = Bbox::new(Vec2::new(3.0, 3.0), Vec2::new(8.0, 8.0));
+    /// let union = bbox1.union(&bbox2);
+    ///
+    /// assert_eq!(union.min, Vec2::new(0.0, 0.0));
+    /// assert_eq!(union.max, Vec2::new(8.0, 8.0));
+    /// ```
+    pub fn union(&self, other: &Self) -> Self {
+        Self {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
+    }
+
+    /// Calculates the overlap ratio between this bounding box and another using the smaller area as denominator.
+    ///
+    /// This method provides a more lenient overlap detection compared to IoU, especially useful
+    /// when dealing with bounding boxes of very different sizes. Unlike IoU which uses the union
+    /// area as denominator, this method uses the smaller of the two areas, making it more sensitive
+    /// to detecting when a smaller bbox is contained within or significantly overlaps with a larger one.
+    ///
+    /// # Arguments
+    /// * `other` - The other bounding box to compare with
+    ///
+    /// # Returns
+    /// The overlap ratio as a f32 between 0.0 and 1.0:
+    /// - 0.0: No overlap
+    /// - 1.0: The smaller bbox is completely contained within the larger one
+    /// - Values > 0.5: Significant overlap relative to the smaller bbox
+    ///
+    /// # Formula
+    /// overlap_ratio = intersection_area / min(area1, area2)
+    ///
+    /// # Example
+    /// ```
+    /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
+    ///
+    /// // Large bbox containing a smaller one
+    /// let large = Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(100.0, 100.0));
+    /// let small = Bbox::new(Vec2::new(10.0, 10.0), Vec2::new(30.0, 30.0));
+    ///
+    /// let overlap_ratio = large.overlap_ratio(&small);
+    /// assert_eq!(overlap_ratio, 1.0); // Small bbox is completely contained
+    ///
+    /// let iou = large.iou(&small);
+    /// assert!(overlap_ratio > iou); // More lenient than IoU
+    /// ```
+    pub fn overlap_ratio(&self, other: &Self) -> f32 {
+        let intersection_area = self.intersection(other);
+        let min_area = self.area().min(other.area());
+
+        if min_area > 0.0 {
+            intersection_area / min_area
+        } else {
+            0.0
+        }
+    }
 }
 
 #[cfg(test)]
@@ -725,5 +801,120 @@ mod tests {
         let precise2 = Bbox::new(glam::Vec2::new(0.2, 0.2), glam::Vec2::new(9.8, 9.8));
         assert!(precise1.contains(&precise2));
         assert!(!precise2.contains(&precise1));
+    }
+
+    #[test]
+    fn test_bbox_union() {
+        // Test basic union of two overlapping boxes
+        let bbox1 = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(5.0, 5.0));
+        let bbox2 = Bbox::new(glam::Vec2::new(3.0, 3.0), glam::Vec2::new(8.0, 8.0));
+        let union = bbox1.union(&bbox2);
+
+        assert_eq!(union.min, glam::Vec2::new(0.0, 0.0));
+        assert_eq!(union.max, glam::Vec2::new(8.0, 8.0));
+        assert_eq!(union.area(), 64.0); // 8x8
+
+        // Test union with non-overlapping boxes
+        let bbox3 = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(2.0, 2.0));
+        let bbox4 = Bbox::new(glam::Vec2::new(5.0, 5.0), glam::Vec2::new(7.0, 7.0));
+        let union2 = bbox3.union(&bbox4);
+
+        assert_eq!(union2.min, glam::Vec2::new(0.0, 0.0));
+        assert_eq!(union2.max, glam::Vec2::new(7.0, 7.0));
+        assert_eq!(union2.area(), 49.0); // 7x7
+
+        // Test union of identical boxes
+        let bbox5 = Bbox::new(glam::Vec2::new(1.0, 1.0), glam::Vec2::new(3.0, 3.0));
+        let bbox6 = Bbox::new(glam::Vec2::new(1.0, 1.0), glam::Vec2::new(3.0, 3.0));
+        let union3 = bbox5.union(&bbox6);
+
+        assert_eq!(union3.min, glam::Vec2::new(1.0, 1.0));
+        assert_eq!(union3.max, glam::Vec2::new(3.0, 3.0));
+        assert_eq!(union3.area(), 4.0); // Same as original
+
+        // Test union where one box contains another
+        let outer = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(10.0, 10.0));
+        let inner = Bbox::new(glam::Vec2::new(2.0, 3.0), glam::Vec2::new(5.0, 7.0));
+        let union4 = outer.union(&inner);
+
+        assert_eq!(union4.min, glam::Vec2::new(0.0, 0.0));
+        assert_eq!(union4.max, glam::Vec2::new(10.0, 10.0));
+        assert_eq!(union4.area(), 100.0); // Same as outer box
+
+        // Test union with negative coordinates
+        let neg1 = Bbox::new(glam::Vec2::new(-5.0, -3.0), glam::Vec2::new(-1.0, 1.0));
+        let neg2 = Bbox::new(glam::Vec2::new(-2.0, -1.0), glam::Vec2::new(3.0, 4.0));
+        let union5 = neg1.union(&neg2);
+
+        assert_eq!(union5.min, glam::Vec2::new(-5.0, -3.0));
+        assert_eq!(union5.max, glam::Vec2::new(3.0, 4.0));
+        assert_eq!(union5.area(), 56.0); // 8x7
+
+        // Test union symmetry (a.union(b) == b.union(a))
+        let bbox7 = Bbox::new(glam::Vec2::new(1.0, 2.0), glam::Vec2::new(4.0, 6.0));
+        let bbox8 = Bbox::new(glam::Vec2::new(3.0, 1.0), glam::Vec2::new(7.0, 5.0));
+        let union_ab = bbox7.union(&bbox8);
+        let union_ba = bbox8.union(&bbox7);
+
+        assert_eq!(union_ab.min, union_ba.min);
+        assert_eq!(union_ab.max, union_ba.max);
+        assert_eq!(union_ab.area(), union_ba.area());
+    }
+
+    #[test]
+    fn test_bbox_overlap_ratio() {
+        // Test complete containment (smaller bbox completely inside larger one)
+        let large = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(100.0, 100.0));
+        let small = Bbox::new(glam::Vec2::new(10.0, 10.0), glam::Vec2::new(30.0, 30.0));
+
+        let overlap_ratio = large.overlap_ratio(&small);
+        assert_eq!(overlap_ratio, 1.0); // Small bbox is completely contained
+
+        // Should be symmetric for complete containment
+        let overlap_ratio_reversed = small.overlap_ratio(&large);
+        assert_eq!(overlap_ratio_reversed, 1.0);
+
+        // Compare with IoU - overlap_ratio should be much higher for containment
+        let iou = large.iou(&small);
+        assert!(overlap_ratio > iou);
+
+        // Test partial overlap with different sizes
+        let bbox1 = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(60.0, 60.0)); // Area: 3600
+        let bbox2 = Bbox::new(glam::Vec2::new(40.0, 40.0), glam::Vec2::new(80.0, 80.0)); // Area: 1600
+        // Intersection: (40,40) to (60,60) = 400
+        // Min area: 1600
+        // Expected overlap ratio: 400/1600 = 0.25
+
+        let overlap_ratio_partial = bbox1.overlap_ratio(&bbox2);
+        assert!((overlap_ratio_partial - 0.25).abs() < 0.001);
+
+        // Test with identical bboxes
+        let identical1 = Bbox::new(glam::Vec2::new(5.0, 5.0), glam::Vec2::new(15.0, 15.0));
+        let identical2 = Bbox::new(glam::Vec2::new(5.0, 5.0), glam::Vec2::new(15.0, 15.0));
+        let overlap_ratio_identical = identical1.overlap_ratio(&identical2);
+        assert_eq!(overlap_ratio_identical, 1.0);
+
+        // Test with no overlap
+        let separate1 = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(10.0, 10.0));
+        let separate2 = Bbox::new(glam::Vec2::new(20.0, 20.0), glam::Vec2::new(30.0, 30.0));
+        let overlap_ratio_none = separate1.overlap_ratio(&separate2);
+        assert_eq!(overlap_ratio_none, 0.0);
+
+        // Test edge case: zero area bbox
+        let zero_area = Bbox::new(glam::Vec2::new(5.0, 5.0), glam::Vec2::new(5.0, 5.0));
+        let normal = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(10.0, 10.0));
+        let overlap_ratio_zero = zero_area.overlap_ratio(&normal);
+        assert_eq!(overlap_ratio_zero, 0.0);
+
+        // Test case where overlap_ratio is more useful than IoU for small-in-large detection
+        let very_large = Bbox::new(glam::Vec2::new(0.0, 0.0), glam::Vec2::new(1000.0, 1000.0)); // 1M area
+        let very_small = Bbox::new(glam::Vec2::new(100.0, 100.0), glam::Vec2::new(110.0, 110.0)); // 100 area
+
+        let overlap_ratio_large_small = very_large.overlap_ratio(&very_small);
+        let iou_large_small = very_large.iou(&very_small);
+
+        assert_eq!(overlap_ratio_large_small, 1.0); // Complete containment
+        assert!(iou_large_small < 0.001); // Very low IoU due to size difference
+        assert!(overlap_ratio_large_small > iou_large_small);
     }
 }
