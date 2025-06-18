@@ -492,10 +492,11 @@ impl OrtSession {
             (f32::INFINITY, f32::NEG_INFINITY),
             |(min_x, max_x), &(o_min_x, o_max_x)| (min_x.min(o_min_x), max_x.max(o_max_x)),
         );
-        let mid_x = min_x + (max_x - min_x) / 2.0;
+        let mid_x = (max_x - min_x) / 2.0;
 
-        let mid_min_x = mid_x / 3.0;
-        let mid_max_x = mid_min_x + mid_x;
+        let _one_of_six = mid_x / 3.0;
+        let mid_min_x = mid_x - _one_of_six;
+        let mid_max_x = mid_x + _one_of_six;
 
         // Separate into left and right columns
         let mut left_column = Vec::new();
@@ -1383,9 +1384,9 @@ mod tests {
         // Expected order: Left column (top to bottom), then Right column (top to bottom)
         let expected_positions = [
             (100.0, 100.0), // Left top
+            (400.0, 100.0), // Right top
             (100.0, 200.0), // Left middle
             (100.0, 300.0), // Left bottom
-            (400.0, 100.0), // Right top
             (400.0, 200.0), // Right middle
             (400.0, 300.0), // Right bottom
         ];
@@ -1459,9 +1460,9 @@ mod tests {
 
         // Check reading order for multi-column layout
         assert_eq!(positions[0], Vec2::new(100.0, 100.0)); // Left top
-        assert_eq!(positions[1], Vec2::new(100.0, 200.0)); // Left middle
-        assert_eq!(positions[2], Vec2::new(100.0, 300.0)); // Left bottom
-        assert_eq!(positions[3], Vec2::new(400.0, 100.0)); // Right top
+        assert_eq!(positions[1], Vec2::new(400.0, 100.0)); // Right top
+        assert_eq!(positions[2], Vec2::new(100.0, 200.0)); // Left middle
+        assert_eq!(positions[3], Vec2::new(100.0, 300.0)); // Left bottom
         assert_eq!(positions[4], Vec2::new(400.0, 200.0)); // Right middle
         assert_eq!(positions[5], Vec2::new(400.0, 300.0)); // Right bottom
     }
