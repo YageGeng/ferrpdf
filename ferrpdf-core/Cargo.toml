@@ -10,7 +10,7 @@ path = "src/bin/analyze.rs"
 [dependencies]
 ab_glyph = "0.2"
 clap = { version = "4.5", features = ["derive"] }
-glam = {version = "0.30",features=["serde"]}
+glam = { version = "0.30", features=["serde"] }
 image = "0.25"
 imageproc = "0.25"
 ndarray = "0.16"
@@ -31,3 +31,7 @@ reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",
 ] }
 tar = "0.4"
+
+[features]
+default = ["coreml"]
+coreml = ["ort/coreml"]

@@ -43,7 +43,17 @@ impl OrtSession {
         // Build ONNX Runtime session with CPU execution provider and optimization
         let session = Session::builder()
             .context(OrtInitSnafu { stage: "Builder" })?
-            .with_execution_providers(vec![CPUExecutionProvider::default().build()])
+            .with_execution_providers(vec![
+                #[cfg(all(feature = "coreml", target_os = "macos"))]
+                {
+                    use ort::execution_providers::CoreMLExecutionProvider;
+                    use ort::execution_providers::coreml::*;
+                    CoreMLExecutionProvider::default()
+                        .with_model_format(CoreMLModelFormat::MLProgram)
+                        .build()
+                },
+                CPUExecutionProvider::default().build(),
+            ])
             .context(OrtInitSnafu {
                 stage: "Execution Providers",
             })?
