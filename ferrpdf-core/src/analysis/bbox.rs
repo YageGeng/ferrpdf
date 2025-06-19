@@ -404,6 +404,44 @@ impl Bbox {
         self.min *= scale;
         self.max *= scale;
     }
+
+    /// Converts the bounding box to a PDFium PdfRect with coordinate system transformation.
+    ///
+    /// PDFium uses a coordinate system where the origin (0,0) is at the bottom-left,
+    /// while image coordinates typically have the origin at the top-left.
+    /// This method handles the Y-axis flip transformation.
+    ///
+    /// # Arguments
+    /// * `page_height` - The height of the PDF page for coordinate transformation
+    ///
+    /// # Returns
+    /// A `PdfRect` suitable for use with PDFium operations
+    ///
+    /// # Example
+    /// ```
+    /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
+    /// let bbox = Bbox::new(Vec2::new(10.0, 20.0), Vec2::new(50.0, 80.0));
+    /// let pdf_rect = bbox.to_pdf_rect(100.0);
+    /// ```
+    #[inline(always)]
+    pub fn to_pdf_rect(&self, page_height: f32) -> pdfium_render::prelude::PdfRect {
+        use pdfium_render::prelude::{PdfPoints, PdfRect};
+
+        // Use glam::Vec2's swizzling and arithmetic operations for efficiency
+        let min_max = glam::Vec4::new(self.min.x, self.min.y, self.max.x, self.max.y);
+
+        // Convert Y coordinates: PDF bottom = page_height - image_top, PDF top = page_height - image_bottom
+        let pdf_bottom = page_height - min_max.w; // page_height - max_y
+        let pdf_top = page_height - min_max.y; // page_height - min_y
+
+        PdfRect::new(
+            PdfPoints::new(pdf_bottom),
+            PdfPoints::new(min_max.x), // min_x
+            PdfPoints::new(pdf_top),
+            PdfPoints::new(min_max.z), // max_x
+        )
+    }
 }
 
 #[cfg(test)]

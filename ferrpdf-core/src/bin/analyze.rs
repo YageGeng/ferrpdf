@@ -2,7 +2,6 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use ferrpdf_core::analysis::bbox::Bbox;
 use ferrpdf_core::layout::element::Layout;
 use glam::Vec2;
 use image::DynamicImage;
@@ -188,11 +187,9 @@ impl Analyzer {
         let page = document.pages().get(page_num as u16)?;
         let page_text = page.text()?;
         let page_height = page.height().value;
-        let page_width = page.width().value;
 
         for layout in layouts.iter_mut() {
-            let pdf_bbox =
-                Self::convert_image_bbox_to_pdf_rect(&layout.bbox, (page_height, page_width));
+            let pdf_bbox = layout.bbox.to_pdf_rect(page_height);
             layout.text = Some(page_text.inside_rect(pdf_bbox));
         }
 
@@ -252,26 +249,6 @@ impl Analyzer {
 
         info!("PDFium initialized successfully");
         Ok(pdfium)
-    }
-
-    /// Convert image bounding box to PDF rectangle coordinates
-    fn convert_image_bbox_to_pdf_rect(bbox: &Bbox, page_size: (f32, f32)) -> PdfRect {
-        let (pdf_height, _) = page_size;
-
-        let pdf_min_x = bbox.min.x;
-        let pdf_max_x = bbox.max.x;
-        let pdf_min_y = bbox.min.y;
-        let pdf_max_y = bbox.max.y;
-
-        let pdf_bottom = pdf_height - pdf_max_y;
-        let pdf_top = pdf_height - pdf_min_y;
-
-        PdfRect::new(
-            PdfPoints::new(pdf_bottom),
-            PdfPoints::new(pdf_min_x),
-            PdfPoints::new(pdf_top),
-            PdfPoints::new(pdf_max_x),
-        )
     }
 }
 
