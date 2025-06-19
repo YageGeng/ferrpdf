@@ -11,3 +11,10 @@ pub struct Layout {
     pub proba: f32,
     pub text: Option<String>,
 }
+
+pub struct TextBlock {
+    pub content: String,
+    pub font_size: f32,
+    pub font_weight: f32,
+    pub font_family: String,
+}
