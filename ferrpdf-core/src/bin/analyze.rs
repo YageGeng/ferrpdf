@@ -11,6 +11,8 @@ use tracing::{error, info};
 
 use ferrpdf_core::consts::*;
 use ferrpdf_core::inference::model::OnnxSession;
+use ferrpdf_core::inference::paddle::model::Paddle;
+use ferrpdf_core::inference::paddle::session::PaddleSession;
 use ferrpdf_core::inference::yolov12::model::Yolov12;
 use ferrpdf_core::inference::yolov12::session::{DocMeta, YoloSession};
 use ort::execution_providers::CPUExecutionProvider;
@@ -38,19 +40,25 @@ struct Args {
 /// Main analyzer struct that holds initialized resources
 pub struct Analyzer {
     session: YoloSession<Yolov12>,
+    ocr_session: PaddleSession<Paddle>,
     pdfium: Pdfium,
 }
 
 impl Analyzer {
-    /// Initialize the analyzer with YOLOv12 session and PDFium
+    /// Initialize the analyzer with YOLOv12 session, OCR session, and PDFium
     pub fn new() -> Result<Self, Box<dyn Error>> {
         info!("Initializing analyzer resources");
 
         let session = Self::initialize_yolo_session()?;
+        let ocr_session = Self::initialize_ocr_session()?;
         let pdfium = Self::initialize_pdfium()?;
 
         info!("Analyzer initialized successfully");
-        Ok(Self { session, pdfium })
+        Ok(Self {
+            session,
+            ocr_session,
+            pdfium,
+        })
     }
 
     /// Analyze a single page of a PDF document
@@ -77,6 +85,12 @@ impl Analyzer {
         // Step 4: Load PDF again for text extraction to avoid borrow conflicts
         let document = self.pdfium.load_pdf_from_file(pdf_path, None)?;
         Self::extract_text_from_layouts(&mut layouts, &document, page_num)?;
+
+        // Step 5: Use OCR to extract text from image regions for better accuracy
+        // Create a clone of the image to avoid borrowing issues
+        let image_clone = image.clone();
+        drop(document); // Explicitly drop the document to release the borrow
+        self.extract_text_with_ocr(&mut layouts, &image_clone, scale)?;
 
         Ok(layouts)
     }
@@ -250,6 +264,72 @@ impl Analyzer {
         info!("PDFium initialized successfully");
         Ok(pdfium)
     }
+
+    /// Initialize OCR session for text recognition
+    fn initialize_ocr_session() -> Result<PaddleSession<Paddle>, Box<dyn Error>> {
+        info!("Initializing OCR session");
+
+        let session_builder = Session::builder()?
+            .with_execution_providers(vec![
+                #[cfg(all(feature = "coreml", target_os = "macos"))]
+                {
+                    use ort::execution_providers::CoreMLExecutionProvider;
+                    use ort::execution_providers::coreml::*;
+                    CoreMLExecutionProvider::default()
+                        .with_model_format(CoreMLModelFormat::MLProgram)
+                        .build()
+                },
+                #[cfg(all(feature = "cuda"))]
+                {
+                    use ort::execution_providers::CUDAExecutionProvider;
+                    CUDAExecutionProvider::default().build()
+                },
+                CPUExecutionProvider::default().build(),
+            ])?
+            .with_optimization_level(GraphOptimizationLevel::Level1)?;
+
+        let model = Paddle::new();
+        let session = PaddleSession::new(session_builder, model)?;
+
+        info!("OCR session initialized successfully");
+        Ok(session)
+    }
+
+    /// Extract text from layout regions using OCR
+    fn extract_text_with_ocr(
+        &mut self,
+        layouts: &mut [Layout],
+        image: &DynamicImage,
+        scale: f32,
+    ) -> Result<(), Box<dyn Error>> {
+        info!("Extracting text using OCR");
+
+        // Filter layouts that are likely to contain text
+        let text_layouts: Vec<usize> = layouts.iter().enumerate().map(|(i, _)| i).collect();
+
+        let mut ocr_extracted_count = 0;
+        for &idx in &text_layouts {
+            if let Ok(text) = self
+                .ocr_session
+                .recognize_text_region(image, &layouts[idx].bbox.scale(scale))
+            {
+                println!("{}", text);
+                let cleaned_text = text.trim();
+                if !cleaned_text.is_empty() {
+                    layouts[idx].text = Some(cleaned_text.to_string());
+                    ocr_extracted_count += 1;
+                }
+            }
+        }
+
+        info!(
+            "OCR extracted text from {} out of {} text regions",
+            ocr_extracted_count,
+            text_layouts.len()
+        );
+
+        Ok(())
+    }
 }
 
 /// Configuration and validation utilities
@@ -298,6 +378,7 @@ impl AnalysisConfig {
 }
 
 /// Print analysis summary to console
+#[allow(dead_code)]
 fn print_analysis_summary(input_path: &str, page_num: usize, layouts: &[Layout]) {
     println!("\n=== PDF Layout Analysis Summary ===");
     println!("Input PDF: {}", input_path);
@@ -337,11 +418,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut analyzer = Analyzer::new()?;
 
     // Analyze the specified page
-    let layouts = analyzer.analyze_page(&config.input_path, config.page_num, &config.output_dir)?;
+    let _layouts =
+        analyzer.analyze_page(&config.input_path, config.page_num, &config.output_dir)?;
 
     // Print summary and output JSON
-    print_analysis_summary(&config.input_path, config.page_num, &layouts);
-    println!("{}", serde_json::to_string(&layouts).unwrap());
+    // print_analysis_summary(&config.input_path, config.page_num, &layouts);
+    // println!("{}", serde_json::to_string(&layouts).unwrap());
 
     info!("Analysis completed successfully!");
     Ok(())
