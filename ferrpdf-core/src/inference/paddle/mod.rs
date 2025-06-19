@@ -1,2 +1,2 @@
-pub mod model;
-pub mod session;
+pub mod detect;
+pub mod recognize;

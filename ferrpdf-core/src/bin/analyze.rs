@@ -11,8 +11,8 @@ use tracing::{error, info};
 
 use ferrpdf_core::consts::*;
 use ferrpdf_core::inference::model::OnnxSession;
-use ferrpdf_core::inference::paddle::model::Paddle;
-use ferrpdf_core::inference::paddle::session::PaddleSession;
+use ferrpdf_core::inference::paddle::recognize::model::PaddleRec;
+use ferrpdf_core::inference::paddle::recognize::session::PaddleRecSession;
 use ferrpdf_core::inference::yolov12::model::Yolov12;
 use ferrpdf_core::inference::yolov12::session::{DocMeta, YoloSession};
 use ort::execution_providers::CPUExecutionProvider;
@@ -40,7 +40,7 @@ struct Args {
 /// Main analyzer struct that holds initialized resources
 pub struct Analyzer {
     session: YoloSession<Yolov12>,
-    ocr_session: PaddleSession<Paddle>,
+    ocr_session: PaddleRecSession<PaddleRec>,
     pdfium: Pdfium,
 }
 
@@ -266,7 +266,7 @@ impl Analyzer {
     }
 
     /// Initialize OCR session for text recognition
-    fn initialize_ocr_session() -> Result<PaddleSession<Paddle>, Box<dyn Error>> {
+    fn initialize_ocr_session() -> Result<PaddleRecSession<PaddleRec>, Box<dyn Error>> {
         info!("Initializing OCR session");
 
         let session_builder = Session::builder()?
@@ -288,8 +288,8 @@ impl Analyzer {
             ])?
             .with_optimization_level(GraphOptimizationLevel::Level1)?;
 
-        let model = Paddle::new();
-        let session = PaddleSession::new(session_builder, model)?;
+        let model = PaddleRec::new();
+        let session = PaddleRecSession::new(session_builder, model)?;
 
         info!("OCR session initialized successfully");
         Ok(session)

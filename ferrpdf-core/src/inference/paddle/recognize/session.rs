@@ -7,21 +7,20 @@ use snafu::{OptionExt, ResultExt};
 use crate::{
     analysis::bbox::Bbox,
     error::*,
-    inference::{
-        model::{Model, OnnxSession},
-        paddle::model::Paddle,
-    },
+    inference::model::{Model, OnnxSession},
     layout::element::Layout,
 };
 
-pub struct PaddleSession<M: Model> {
+use super::model::PaddleRec;
+
+pub struct PaddleRecSession<M: Model> {
     session: Session,
     model: M,
     character_dict: Vec<String>,
 }
 
-impl PaddleSession<Paddle> {
-    pub fn new(session: SessionBuilder, model: Paddle) -> Result<Self, FerrpdfError> {
+impl PaddleRecSession<PaddleRec> {
+    pub fn new(session: SessionBuilder, model: PaddleRec) -> Result<Self, FerrpdfError> {
         let session = session
             .commit_from_memory(model.load())
             .context(OrtInitSnafu { stage: "commit" })?;
@@ -116,11 +115,14 @@ impl PaddleSession<Paddle> {
     }
 }
 
-impl OnnxSession<Paddle> for PaddleSession<Paddle> {
+impl OnnxSession<PaddleRec> for PaddleRecSession<PaddleRec> {
     type Output = String;
     type Extra = ();
 
-    fn preprocess(&self, image: &DynamicImage) -> Result<<Paddle as Model>::Input, FerrpdfError> {
+    fn preprocess(
+        &self,
+        image: &DynamicImage,
+    ) -> Result<<PaddleRec as Model>::Input, FerrpdfError> {
         let config = self.model.config();
 
         // Convert to RGB if needed
@@ -168,7 +170,7 @@ impl OnnxSession<Paddle> for PaddleSession<Paddle> {
 
     fn postprocess(
         &self,
-        output: <Paddle as Model>::Output,
+        output: <PaddleRec as Model>::Output,
         _extra: Self::Extra,
     ) -> Result<Self::Output, FerrpdfError> {
         // Output shape is [batch_size, sequence_length, vocab_size]
@@ -203,10 +205,10 @@ impl OnnxSession<Paddle> for PaddleSession<Paddle> {
 
     fn infer(
         &mut self,
-        input: <Paddle as Model>::Input,
+        input: <PaddleRec as Model>::Input,
         input_name: &str,
         output_name: &str,
-    ) -> Result<<Paddle as Model>::Output, FerrpdfError> {
+    ) -> Result<<PaddleRec as Model>::Output, FerrpdfError> {
         // Run inference
         let output = self
             .session
@@ -260,8 +262,8 @@ mod tests {
             .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
             .with_optimization_level(GraphOptimizationLevel::Level1)?;
 
-        let model = Paddle::new();
-        let session = PaddleSession::new(session_builder, model)?;
+        let model = PaddleRec::new();
+        let session = PaddleRecSession::new(session_builder, model)?;
 
         // Print character dictionary size for debugging
         println!(
@@ -287,8 +289,8 @@ mod tests {
             .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
             .with_optimization_level(GraphOptimizationLevel::Level1)?;
 
-        let model = Paddle::new();
-        let session = PaddleSession::new(session_builder, model)?;
+        let model = PaddleRec::new();
+        let session = PaddleRecSession::new(session_builder, model)?;
 
         // Test preprocessing
         let preprocessed = session.preprocess(&test_image)?;
@@ -320,8 +322,8 @@ mod tests {
             .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
             .with_optimization_level(GraphOptimizationLevel::Level1)?;
 
-        let model = Paddle::new();
-        let mut session = PaddleSession::new(session_builder, model)?;
+        let model = PaddleRec::new();
+        let mut session = PaddleRecSession::new(session_builder, model)?;
 
         // Create test layouts
         let mut layouts = vec![
