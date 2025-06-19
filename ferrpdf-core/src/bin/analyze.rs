@@ -281,7 +281,7 @@ fn convert_image_bbox_to_pdf_rect(bbox: &mut Bbox, page_size: (f32, f32), scale:
     let (pdf_height, _) = page_size;
     let rescale = 1. / scale;
 
-    bbox.scale(rescale);
+    bbox.scale_mut(rescale);
 
     let pdf_min_x = bbox.min.x;
     let pdf_max_x = bbox.max.x;

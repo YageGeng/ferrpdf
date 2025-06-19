@@ -89,3 +89,5 @@ pub const BATCH_SIZE: usize = 1;
 /// are filled with this normalized value (144/255 ≈ 0.565).
 /// This value is chosen to represent a neutral gray background.
 pub const BACKGROUND_FILL_VALUE: f32 = 144.0 / 255.0;
+
+pub const FONT: &[u8] = include_bytes!("../../fonts/DejaVuSans.ttf");

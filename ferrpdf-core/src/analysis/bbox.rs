@@ -392,7 +392,15 @@ impl Bbox {
     }
 
     #[inline(always)]
-    pub fn scale(&mut self, scale: f32) {
+    pub fn scale(&self, scale: f32) -> Self {
+        Self {
+            min: self.min * scale,
+            max: self.max * scale,
+        }
+    }
+
+    #[inline(always)]
+    pub fn scale_mut(&mut self, scale: f32) {
         self.min *= scale;
         self.max *= scale;
     }
