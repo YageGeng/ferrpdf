@@ -1,9 +1,6 @@
 use ndarray::{ArrayBase, Dim, OwnedRepr};
 
-use crate::{
-    consts::{CXYWH_OFFSET, LABEL_SIZE, OUTPUT_SIZE, PROBA_THRESHOLD},
-    inference::model::Model,
-};
+use crate::{consts::*, inference::model::Model};
 
 const YOLOV12: &[u8] = include_bytes!("../../../../models/yolov12s-doclaynet.onnx");
 
@@ -22,7 +19,7 @@ pub struct Yolov12Config {
     pub background_fill_value: f32,
     pub output_size: [usize; 3],
     pub cxywh_size: usize,
-    pub label_size: usize,
+    pub label_proba_size: usize,
     pub proba_threshold: f32,
     pub iou_threshold: f32,
     pub y_tolerance_threshold: f32,
@@ -38,11 +35,29 @@ impl Default for Yolov12Config {
             background_fill_value: 144.0 / 255.0,
             output_size: OUTPUT_SIZE,
             cxywh_size: CXYWH_OFFSET,
-            label_size: LABEL_SIZE,
+            label_proba_size: LABEL_PROBA_SIZE,
             proba_threshold: PROBA_THRESHOLD,
             iou_threshold: 0.45,
             y_tolerance_threshold: 10.0,
         }
+    }
+}
+
+impl Yolov12 {
+    pub fn new() -> Self {
+        Self {
+            config: Yolov12Config::default(),
+        }
+    }
+
+    pub fn with_config(config: Yolov12Config) -> Self {
+        Self { config }
+    }
+}
+
+impl Default for Yolov12 {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -52,7 +67,7 @@ impl Model for Yolov12 {
     type Output = Yolov12Output;
     type Config = Yolov12Config;
 
-    const INPUT_NAME: &'static str = "input0";
+    const INPUT_NAME: &'static str = "images";
 
     const OUTPUT_NAME: &'static str = "output0";
 

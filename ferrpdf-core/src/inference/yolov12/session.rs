@@ -31,6 +31,7 @@ pub struct YoloSession<M: Model> {
 }
 
 /// Document metadata
+#[derive(Clone)]
 pub struct DocMeta {
     pub pdf_size: Vec2,
     pub image_size: Vec2,
@@ -107,6 +108,7 @@ impl OnnxSession<Yolov12> for YoloSession<Yolov12> {
         // merge overlapping boxes
         self.nms(&mut layouts);
 
+        // println!("{}", layouts.len());
         // sort bbox order by top-left first
         self.sort_by_reading_order(&mut layouts);
 
@@ -154,11 +156,12 @@ impl YoloSession<Yolov12> {
         // Iterate through each prediction in the output
         let mut label_idx = 0;
         let config = self.model.config();
+        let scale = 1. / extra.scale;
         for prediction in output.axis_iter(Axis(1)) {
             // Extract bounding box coordinates (center_x, center_y, width, height)
             let bbox = prediction.slice(ndarray::s![0..config.cxywh_size]);
             // Extract class probabilities for different document elements
-            let labels = prediction.slice(ndarray::s![config.cxywh_size..config.label_size]);
+            let labels = prediction.slice(ndarray::s![config.cxywh_size..config.label_proba_size]);
 
             // Find the class with the highest probability
             let (max_prob_idx, &proba) = labels
@@ -181,7 +184,7 @@ impl YoloSession<Yolov12> {
             // Convert from YOLO center-size format to bounding box and clamp to image bounds
             let bbox = Bbox::from_center_size(Vec2::new(cx, cy), Vec2::new(w, h))
                 .clamp(Vec2::new(0.0, 0.0), extra.image_size)
-                .scale(1. / extra.scale); // transform to pdf coordinates
+                .scale(scale); // transform to pdf coordinates
 
             // Create layout element with detected information
             let layout = Layout {
@@ -260,19 +263,13 @@ impl YoloSession<Yolov12> {
         raw_layouts.truncate(write_index);
     }
 
-    #[allow(dead_code)]
-    fn draw<P: AsRef<Path>>(
+    pub fn draw<P: AsRef<Path>>(
         &self,
         output: P,
         extra: &DocMeta,
         layouts: &[Layout],
         image: &DynamicImage,
     ) -> Result<(), FerrpdfError> {
-        // pub fn draw_bbox<P: AsRef<Path>>(
-        //     img: &DynamicImage,
-        //     layouts: &[Layout],
-        //     output_path: P,
-        // ) -> Result<(), FerrpdfError> {
         let mut output_img = image.to_rgb8();
 
         let font = FontRef::try_from_slice(FONT).context(FontSnafu {})?;
