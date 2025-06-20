@@ -116,6 +116,23 @@ pub struct PaddleDetConfig {
     ///
     /// Default: 5.0
     pub merge_distance_thresh: f32,
+
+    /// Overlap ratio threshold for merging text boxes (0.0 to 1.0)
+    ///
+    /// When merging text boxes, this threshold controls the minimum overlap ratio
+    /// required between two text boxes to be merged into one.
+    ///
+    /// Overlap ratio = intersection_area / min(area1, area2)
+    /// This is more lenient than IoU and better for detecting containment relationships.
+    ///
+    /// - Higher values (e.g., 0.8): Only merge very similar/overlapping boxes
+    /// - Lower values (e.g., 0.3): Merge more loosely related boxes
+    ///
+    /// This is used to merge text boxes that are likely part of the same text region.
+    ///
+    /// Typical range: 0.3 - 0.8
+    /// Default: 0.6 (merge if overlap ratio > 60%)
+    pub iou_threshold: f32,
 }
 
 impl Default for PaddleDetConfig {
@@ -131,8 +148,9 @@ impl Default for PaddleDetConfig {
             det_db_unclip_ratio: 1.5,
             max_candidates: 1000,
             max_side_thresh: 3.0,
-            text_padding: 3.0,
+            text_padding: 6.0,
             merge_distance_thresh: 5.0,
+            iou_threshold: 0.6,
         }
     }
 }

@@ -237,7 +237,7 @@ impl PaddleDetSession<PaddleDet> {
             detections.push(TextDetection { bbox, proba: score });
         }
 
-        // Merge completely contained text boxes
+        // Merge text boxes into lines based on vertical and horizontal overlap
         self.merge_bboxes(detections)
     }
 
@@ -433,8 +433,13 @@ impl PaddleDetSession<PaddleDet> {
             .collect()
     }
 
-    /// Merge completely contained text boxes
+    /// Merge text boxes based on IoU threshold
     fn merge_bboxes(&self, detections: Vec<TextDetection>) -> Vec<TextDetection> {
+        if detections.is_empty() {
+            return detections;
+        }
+
+        let config = self.model.config();
         let mut merged = Vec::new();
         let mut used = vec![false; detections.len()];
 
@@ -442,25 +447,35 @@ impl PaddleDetSession<PaddleDet> {
             if used[i] {
                 continue;
             }
-            let mut cur_bbox = det.bbox;
-            let mut cur_proba = det.proba;
-            // Check for containment relationships
+
+            let mut current_bbox = det.bbox;
+            let mut max_proba = det.proba;
+            used[i] = true;
+
+            // Try to merge with other text boxes
             for (j, other) in detections.iter().enumerate().skip(i + 1) {
                 if used[j] {
                     continue;
                 }
-                if cur_bbox.contains(&other.bbox) || other.bbox.contains(&cur_bbox) {
-                    cur_bbox = cur_bbox.union(&other.bbox);
-                    cur_proba = cur_proba.max(other.proba);
+
+                let overlap_ratio = current_bbox.overlap_ratio(&other.bbox);
+
+                // Check if overlap ratio meets threshold
+                if overlap_ratio >= config.iou_threshold {
+                    // Merge into current bbox
+                    current_bbox = current_bbox.union(&other.bbox);
+                    max_proba = max_proba.max(other.proba);
                     used[j] = true;
                 }
             }
-            used[i] = true;
+
+            // Add merged bbox to results
             merged.push(TextDetection {
-                bbox: cur_bbox,
-                proba: cur_proba,
+                bbox: current_bbox,
+                proba: max_proba,
             });
         }
+
         merged
     }
 
@@ -820,18 +835,16 @@ mod tests {
         assert_eq!(config.det_db_box_thresh, 0.6);
 
         // Test custom configuration
-        let custom_config = PaddleDetConfig {
-            max_side_thresh: 5.0,
-            text_padding: 4.0,
-            det_db_thresh: 0.4,
-            det_db_box_thresh: 0.7,
+        let config = PaddleDetConfig {
+            iou_threshold: 0.7, // 70% IoU threshold
             ..PaddleDetConfig::default()
         };
 
-        assert_eq!(custom_config.max_side_thresh, 5.0);
-        assert_eq!(custom_config.text_padding, 4.0);
-        assert_eq!(custom_config.det_db_thresh, 0.4);
-        assert_eq!(custom_config.det_db_box_thresh, 0.7);
+        assert_eq!(config.max_side_thresh, 3.0);
+        assert_eq!(config.text_padding, 3.0);
+        assert_eq!(config.det_db_thresh, 0.3);
+        assert_eq!(config.det_db_box_thresh, 0.6);
+        assert_eq!(config.iou_threshold, 0.7);
     }
 
     #[test]
@@ -883,6 +896,112 @@ mod tests {
         assert!((bbox.max.x - expected_max_x).abs() < 0.1);
         assert!((bbox.max.y - expected_max_y).abs() < 0.1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_text_line_merging() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::inference::paddle::detect::model::PaddleDet;
+        use crate::inference::paddle::detect::model::PaddleDetConfig;
+
+        // Create a session with custom line merge threshold
+        let session_builder = Session::builder()?
+            .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
+            .with_optimization_level(GraphOptimizationLevel::Level1)?;
+
+        let config = PaddleDetConfig {
+            iou_threshold: 0.7, // 70% IoU threshold
+            ..PaddleDetConfig::default()
+        };
+        let model = PaddleDet::with_config(config);
+        let session = PaddleDetSession::new(session_builder, model)?;
+
+        // Create test detections that should form a line
+        let detections = vec![
+            TextDetection {
+                bbox: Bbox::new(glam::Vec2::new(10.0, 20.0), glam::Vec2::new(50.0, 40.0)), // "Hello"
+                proba: 0.9,
+            },
+            TextDetection {
+                bbox: Bbox::new(glam::Vec2::new(60.0, 20.0), glam::Vec2::new(100.0, 40.0)), // "World"
+                proba: 0.8,
+            },
+            TextDetection {
+                bbox: Bbox::new(glam::Vec2::new(110.0, 20.0), glam::Vec2::new(150.0, 40.0)), // "!"
+                proba: 0.7,
+            },
+            // Different line (different Y position)
+            TextDetection {
+                bbox: Bbox::new(glam::Vec2::new(10.0, 60.0), glam::Vec2::new(50.0, 80.0)), // "Second"
+                proba: 0.85,
+            },
+        ];
+
+        let merged = session.merge_bboxes(detections);
+
+        // Should have 2 merged lines
+        assert_eq!(merged.len(), 2);
+
+        // First line should span from x=10 to x=150
+        let first_line = &merged[0];
+        assert_eq!(first_line.bbox.min.x, 10.0);
+        assert_eq!(first_line.bbox.max.x, 150.0);
+        assert_eq!(first_line.proba, 0.9); // Should take max probability
+
+        // Second line should be separate
+        let second_line = &merged[1];
+        assert_eq!(second_line.bbox.min.x, 10.0);
+        assert_eq!(second_line.bbox.max.x, 50.0);
+
+        println!("Text line merging test passed");
+        Ok(())
+    }
+
+    #[test]
+    fn test_overlapping_bbox_removal() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::inference::paddle::detect::model::PaddleDet;
+        use crate::inference::paddle::detect::model::PaddleDetConfig;
+
+        let session_builder = Session::builder()?
+            .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
+            .with_optimization_level(GraphOptimizationLevel::Level1)?;
+
+        let config = PaddleDetConfig::default();
+        let model = PaddleDet::with_config(config);
+        let session = PaddleDetSession::new(session_builder, model)?;
+
+        // Create overlapping detections
+        let detections = vec![
+            TextDetection {
+                bbox: Bbox::new(glam::Vec2::new(10.0, 20.0), glam::Vec2::new(100.0, 40.0)), // Higher confidence
+                proba: 0.9,
+            },
+            TextDetection {
+                bbox: Bbox::new(glam::Vec2::new(50.0, 25.0), glam::Vec2::new(150.0, 45.0)), // Overlapping, lower confidence
+                proba: 0.7,
+            },
+            TextDetection {
+                bbox: Bbox::new(glam::Vec2::new(200.0, 20.0), glam::Vec2::new(300.0, 40.0)), // Non-overlapping
+                proba: 0.8,
+            },
+        ];
+
+        let result = session.merge_bboxes(detections);
+
+        // Should have 2 non-overlapping detections
+        assert_eq!(result.len(), 2);
+
+        // First should be the highest confidence one
+        assert_eq!(result[0].proba, 0.9);
+        assert_eq!(result[0].bbox.min.x, 10.0);
+        assert_eq!(result[0].bbox.max.x, 100.0);
+
+        // Second should be the non-overlapping one
+        assert_eq!(result[1].proba, 0.8);
+        assert_eq!(result[1].bbox.min.x, 200.0);
+        assert_eq!(result[1].bbox.max.x, 300.0);
+
+        println!("Overlapping bbox removal test passed");
         Ok(())
     }
 }
