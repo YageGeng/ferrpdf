@@ -391,6 +391,26 @@ impl Bbox {
         }
     }
 
+    /// Scales the bounding box by a factor.
+    ///
+    /// This method multiplies both the minimum and maximum points by the scale factor,
+    /// effectively scaling the bounding box from its center.
+    ///
+    /// # Arguments
+    /// * `scale` - The scale factor to apply
+    ///
+    /// # Returns
+    /// A new scaled bounding box
+    ///
+    /// # Example
+    /// ```
+    /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
+    /// let bbox = Bbox::new(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0));
+    /// let scaled = bbox.scale(2.0);
+    /// assert_eq!(scaled.min, Vec2::new(2.0, 4.0));
+    /// assert_eq!(scaled.max, Vec2::new(6.0, 8.0));
+    /// ```
     #[inline(always)]
     pub fn scale(&self, scale: f32) -> Self {
         Self {
@@ -399,10 +419,32 @@ impl Bbox {
         }
     }
 
+    /// Translates the bounding box by a vector offset.
+    ///
+    /// This method adds the offset vector to both the minimum and maximum points,
+    /// effectively moving the bounding box without changing its size.
+    ///
+    /// # Arguments
+    /// * `offset` - The vector offset to apply
+    ///
+    /// # Returns
+    /// A new translated bounding box
+    ///
+    /// # Example
+    /// ```
+    /// use glam::Vec2;
+    /// use ferrpdf_core::analysis::bbox::Bbox;
+    /// let bbox = Bbox::new(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0));
+    /// let translated = bbox.translate(Vec2::new(10.0, 5.0));
+    /// assert_eq!(translated.min, Vec2::new(11.0, 7.0));
+    /// assert_eq!(translated.max, Vec2::new(13.0, 9.0));
+    /// ```
     #[inline(always)]
-    pub fn scale_mut(&mut self, scale: f32) {
-        self.min *= scale;
-        self.max *= scale;
+    pub fn translate(&self, offset: glam::Vec2) -> Self {
+        Self {
+            min: self.min + offset,
+            max: self.max + offset,
+        }
     }
 
     /// Converts the bounding box to a PDFium PdfRect with coordinate system transformation.

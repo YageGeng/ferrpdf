@@ -11,6 +11,8 @@ use tracing::{error, info};
 
 use ferrpdf_core::consts::*;
 use ferrpdf_core::inference::model::OnnxSession;
+use ferrpdf_core::inference::paddle::detect::model::PaddleDet;
+use ferrpdf_core::inference::paddle::detect::session::{PaddleDetSession, TextDetection};
 use ferrpdf_core::inference::paddle::recognize::model::PaddleRec;
 use ferrpdf_core::inference::paddle::recognize::session::PaddleRecSession;
 use ferrpdf_core::inference::yolov12::model::Yolov12;
@@ -40,22 +42,25 @@ struct Args {
 /// Main analyzer struct that holds initialized resources
 pub struct Analyzer {
     session: YoloSession<Yolov12>,
+    text_det_session: PaddleDetSession<PaddleDet>,
     ocr_session: PaddleRecSession<PaddleRec>,
     pdfium: Pdfium,
 }
 
 impl Analyzer {
-    /// Initialize the analyzer with YOLOv12 session, OCR session, and PDFium
+    /// Initialize the analyzer with YOLOv12 session, text detection session, OCR session, and PDFium
     pub fn new() -> Result<Self, Box<dyn Error>> {
         info!("Initializing analyzer resources");
 
         let session = Self::initialize_yolo_session()?;
+        let text_det_session = Self::initialize_text_det_session()?;
         let ocr_session = Self::initialize_ocr_session()?;
         let pdfium = Self::initialize_pdfium()?;
 
         info!("Analyzer initialized successfully");
         Ok(Self {
             session,
+            text_det_session,
             ocr_session,
             pdfium,
         })
@@ -86,11 +91,17 @@ impl Analyzer {
         let document = self.pdfium.load_pdf_from_file(pdf_path, None)?;
         Self::extract_text_from_layouts(&mut layouts, &document, page_num)?;
 
-        // Step 5: Use OCR to extract text from image regions for better accuracy
+        // Step 5: Detect text lines and extract text with OCR for better accuracy
         // Create a clone of the image to avoid borrowing issues
         let image_clone = image.clone();
         drop(document); // Explicitly drop the document to release the borrow
-        self.extract_text_with_ocr(&mut layouts, &image_clone, scale)?;
+        let text_detections =
+            self.extract_text_with_detection_and_ocr(&mut layouts, &image_clone, scale)?;
+
+        // Step 6: Save text detection visualization
+        if !text_detections.is_empty() {
+            self.save_text_detection_result(&image_clone, &text_detections, output_dir, page_num)?;
+        }
 
         Ok(layouts)
     }
@@ -190,6 +201,25 @@ impl Analyzer {
         Ok(())
     }
 
+    /// Save text detection results to output directory
+    fn save_text_detection_result(
+        &self,
+        image: &DynamicImage,
+        text_detections: &[TextDetection],
+        output_dir: &Path,
+        page_num: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        let output_path = output_dir.join(format!("text-detection-page-{}.jpg", page_num));
+
+        info!("Saving text detection result to: {:?}", output_path);
+
+        self.text_det_session
+            .draw(&output_path, text_detections, image)?;
+        info!("Text detection result saved successfully");
+
+        Ok(())
+    }
+
     /// Extract text from detected layout elements
     fn extract_text_from_layouts(
         layouts: &mut [Layout],
@@ -265,6 +295,36 @@ impl Analyzer {
         Ok(pdfium)
     }
 
+    /// Initialize text detection session for text line detection
+    fn initialize_text_det_session() -> Result<PaddleDetSession<PaddleDet>, Box<dyn Error>> {
+        info!("Initializing text detection session");
+
+        let session_builder = Session::builder()?
+            .with_execution_providers(vec![
+                #[cfg(all(feature = "coreml", target_os = "macos"))]
+                {
+                    use ort::execution_providers::CoreMLExecutionProvider;
+                    use ort::execution_providers::coreml::*;
+                    CoreMLExecutionProvider::default()
+                        .with_model_format(CoreMLModelFormat::MLProgram)
+                        .build()
+                },
+                #[cfg(all(feature = "cuda"))]
+                {
+                    use ort::execution_providers::CUDAExecutionProvider;
+                    CUDAExecutionProvider::default().build()
+                },
+                CPUExecutionProvider::default().build(),
+            ])?
+            .with_optimization_level(GraphOptimizationLevel::Level1)?;
+
+        let model = PaddleDet::new();
+        let session = PaddleDetSession::new(session_builder, model)?;
+
+        info!("Text detection session initialized successfully");
+        Ok(session)
+    }
+
     /// Initialize OCR session for text recognition
     fn initialize_ocr_session() -> Result<PaddleRecSession<PaddleRec>, Box<dyn Error>> {
         info!("Initializing OCR session");
@@ -295,7 +355,67 @@ impl Analyzer {
         Ok(session)
     }
 
-    /// Extract text from layout regions using OCR
+    /// Extract text from layout regions using text detection followed by OCR
+    fn extract_text_with_detection_and_ocr(
+        &mut self,
+        layouts: &mut [Layout],
+        image: &DynamicImage,
+        scale: f32,
+    ) -> Result<Vec<TextDetection>, Box<dyn Error>> {
+        info!("Extracting text using text detection and OCR");
+
+        // Step 1: Detect text lines within each layout region
+        // Note: layouts bbox coordinates are in PDF space, need to convert to image space
+        let text_detections = self
+            .text_det_session
+            .detect_text_in_layouts(image, layouts, scale)?;
+
+        let mut total_text_lines = 0;
+        let mut ocr_extracted_count = 0;
+        let mut all_detections = Vec::new();
+
+        // Step 2: Apply OCR to each detected text line
+        for (layout_idx, layout_text_lines) in text_detections.iter().enumerate() {
+            if layout_idx >= layouts.len() {
+                continue;
+            }
+
+            total_text_lines += layout_text_lines.len();
+            let mut layout_texts = Vec::new();
+
+            for text_detection in layout_text_lines {
+                // TextDetection already has a bbox field, no need to convert from points
+                let bbox = text_detection.bbox;
+                if let Ok(text) = self.ocr_session.recognize_text_region(image, &bbox) {
+                    println!("{}", text);
+                    let cleaned_text = text.trim();
+                    if !cleaned_text.is_empty() {
+                        layout_texts.push(cleaned_text.to_string());
+                        ocr_extracted_count += 1;
+                    }
+                }
+                // Add all detections to the result
+                all_detections.push(text_detection.clone());
+            }
+
+            // Combine all text lines for this layout
+            if !layout_texts.is_empty() {
+                layouts[layout_idx].text = Some(layout_texts.join(" "));
+            }
+        }
+
+        info!(
+            "Detected {} text lines across {} layouts, OCR extracted text from {} lines",
+            total_text_lines,
+            layouts.len(),
+            ocr_extracted_count
+        );
+
+        Ok(all_detections)
+    }
+
+    /// Extract text from layout regions using OCR (fallback method)
+    #[allow(unused)]
     fn extract_text_with_ocr(
         &mut self,
         layouts: &mut [Layout],
@@ -420,10 +540,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Analyze the specified page
     let _layouts =
         analyzer.analyze_page(&config.input_path, config.page_num, &config.output_dir)?;
-
-    // Print summary and output JSON
-    // print_analysis_summary(&config.input_path, config.page_num, &layouts);
-    // println!("{}", serde_json::to_string(&layouts).unwrap());
 
     info!("Analysis completed successfully!");
     Ok(())
