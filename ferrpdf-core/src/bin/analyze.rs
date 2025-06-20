@@ -24,15 +24,22 @@ struct Args {
     input: String,
 
     #[arg(
-        short,
         long,
-        default_value = "0",
-        help = "Page number to analyze (0-based)"
+        short('p'),
+        help = "Specify pages to parse using Rust range syntax: '0..5' for pages 0-4, '1..' for pages 1 onwards, '..5' for first 5 pages, '3' for single page. If not specified, all pages will be processed."
     )]
-    page: usize,
+    page: Option<String>,
 
     #[arg(short, long, default_value = "images", help = "Output directory")]
     output: String,
+
+    #[arg(
+        short,
+        long,
+        default_value = "false",
+        help = "Enable debug mode to save debug images"
+    )]
+    debug: bool,
 }
 
 /// Main analyzer struct that holds initialized resources
@@ -68,6 +75,7 @@ impl Analyzer {
         pdf_path: &str,
         page_num: usize,
         output_dir: &Path,
+        debug: bool,
     ) -> Result<Vec<Layout>, Box<dyn Error>> {
         info!("Analyzing page {} of {}", page_num, pdf_path);
 
@@ -80,8 +88,10 @@ impl Analyzer {
         // Step 2: Perform layout analysis
         let (mut layouts, doc_meta) = self.perform_layout_analysis(&image, scale, page_num)?;
 
-        // Step 3: Save analysis results
-        self.save_analysis_result(&doc_meta, &image, &layouts, output_dir, page_num)?;
+        // Step 3: Save analysis results (only if debug mode is enabled)
+        if debug {
+            self.save_analysis_result(&doc_meta, &image, &layouts, output_dir, page_num)?;
+        }
 
         // Step 4: Load PDF again for text extraction to avoid borrow conflicts
         let document = self.pdfium.load_pdf_from_file(pdf_path, None)?;
@@ -94,8 +104,8 @@ impl Analyzer {
         let text_detections =
             self.extract_text_with_detection_and_ocr(&mut layouts, &image_clone, scale)?;
 
-        // Step 6: Save text detection visualization
-        if !text_detections.is_empty() {
+        // Step 6: Save text detection visualization (only if debug mode is enabled)
+        if debug && !text_detections.is_empty() {
             self.save_text_detection_result(&image_clone, &text_detections, output_dir, page_num)?;
         }
 
@@ -451,8 +461,9 @@ impl Analyzer {
 /// Configuration and validation utilities
 struct AnalysisConfig {
     input_path: String,
-    page_num: usize,
+    page: Option<String>,
     output_dir: PathBuf,
+    debug: bool,
 }
 
 impl AnalysisConfig {
@@ -462,8 +473,9 @@ impl AnalysisConfig {
 
         Ok(Self {
             input_path: args.input,
-            page_num: args.page,
+            page: args.page,
             output_dir,
+            debug: args.debug,
         })
     }
 
@@ -479,6 +491,138 @@ impl AnalysisConfig {
         }
 
         Ok(())
+    }
+
+    fn validate_page_range(&self, total_pages: usize) -> Result<(), Box<dyn Error>> {
+        if let Some(page_range_str) = &self.page {
+            // Check if it's a single page number
+            if let Ok(page) = page_range_str.parse::<usize>() {
+                if page >= total_pages {
+                    return Err(format!(
+                        "Page {} is out of range. PDF has {} pages (0-based indexing)",
+                        page, total_pages
+                    )
+                    .into());
+                }
+                return Ok(());
+            }
+
+            // Try to parse as Rust range syntax
+            if page_range_str.contains("..") {
+                let parts: Vec<&str> = page_range_str.split("..").collect();
+
+                match parts.len() {
+                    2 => {
+                        let start_str = parts[0];
+                        let end_str = parts[1];
+
+                        if start_str.is_empty() && end_str.is_empty() {
+                            return Err("Invalid range format: '..'. Use format like '0..5', '1..', '..5', or '3'".into());
+                        } else if start_str.is_empty() {
+                            // Format: "..5" - first 5 pages
+                            let end = end_str
+                                .parse::<usize>()
+                                .map_err(|_| format!("Invalid end page number: {}", end_str))?;
+                            if end > total_pages {
+                                return Err(format!(
+                                    "End page {} is out of range. PDF has {} pages (0-based indexing)",
+                                    end, total_pages
+                                ).into());
+                            }
+                        } else if end_str.is_empty() {
+                            // Format: "1.." - from page 1 onwards
+                            let start = start_str
+                                .parse::<usize>()
+                                .map_err(|_| format!("Invalid start page number: {}", start_str))?;
+                            if start >= total_pages {
+                                return Err(format!(
+                                    "Start page {} is out of range. PDF has {} pages (0-based indexing)",
+                                    start, total_pages
+                                ).into());
+                            }
+                        } else {
+                            // Format: "0..5" - pages 0 to 4
+                            let start = start_str
+                                .parse::<usize>()
+                                .map_err(|_| format!("Invalid start page number: {}", start_str))?;
+                            let end = end_str
+                                .parse::<usize>()
+                                .map_err(|_| format!("Invalid end page number: {}", end_str))?;
+
+                            if start >= total_pages || end > total_pages {
+                                return Err(format!(
+                                    "Page range {} is out of range. PDF has {} pages (0-based indexing)",
+                                    page_range_str, total_pages
+                                ).into());
+                            }
+
+                            if start >= end {
+                                return Err(format!(
+                                    "Invalid page range: start page {} must be less than end page {}",
+                                    start, end
+                                ).into());
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(format!(
+                            "Invalid range format: {}. Use format like '0..5', '1..', '..5', or '3'",
+                            page_range_str
+                        ).into());
+                    }
+                }
+            } else {
+                return Err(format!(
+                    "Invalid page format: {}. Use format like '0..5', '1..', '..5', or '3'",
+                    page_range_str
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    fn get_page_range(&self, total_pages: usize) -> Vec<usize> {
+        let mut pages = Vec::new();
+        if let Some(page_range_str) = &self.page {
+            // Check if it's a single page number
+            if let Ok(page) = page_range_str.parse::<usize>() {
+                pages.push(page);
+            } else if page_range_str.contains("..") {
+                // Parse as Rust range syntax
+                let parts: Vec<&str> = page_range_str.split("..").collect();
+
+                if parts.len() == 2 {
+                    let start_str = parts[0];
+                    let end_str = parts[1];
+
+                    if start_str.is_empty() && !end_str.is_empty() {
+                        // Format: "..5" - first 5 pages
+                        if let Ok(end) = end_str.parse::<usize>() {
+                            pages.extend(0..end);
+                        }
+                    } else if !start_str.is_empty() && end_str.is_empty() {
+                        // Format: "1.." - from page 1 onwards
+                        if let Ok(start) = start_str.parse::<usize>() {
+                            pages.extend(start..total_pages);
+                        }
+                    } else if !start_str.is_empty() && !end_str.is_empty() {
+                        // Format: "0..5" - pages 0 to 4
+                        if let (Ok(start), Ok(end)) =
+                            (start_str.parse::<usize>(), end_str.parse::<usize>())
+                        {
+                            pages.extend(start..end);
+                        }
+                    }
+                }
+            }
+        } else {
+            // If no page range is specified, process all pages
+            pages.extend(0..total_pages);
+        }
+        pages.sort_unstable();
+        pages.dedup();
+        pages.into_iter().filter(|&p| p < total_pages).collect()
     }
 
     fn setup_output_directory(output_dir: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -499,8 +643,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     info!("Starting PDF layout analysis");
     info!("Input PDF: {}", args.input);
-    info!("Page: {}", args.page);
+    info!("Page range: {:?}", args.page);
     info!("Output directory: {}", args.output);
+    info!("Debug mode: {}", args.debug);
 
     // Parse and validate configuration
     let config = AnalysisConfig::from_args(args)?;
@@ -508,10 +653,37 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Initialize analyzer (session and pdfium are created once)
     let mut analyzer = Analyzer::new()?;
 
-    // Analyze the specified page
-    let _layouts =
-        analyzer.analyze_page(&config.input_path, config.page_num, &config.output_dir)?;
+    // Get total number of pages in the PDF
+    let document = analyzer
+        .pdfium
+        .load_pdf_from_file(&config.input_path, None)?;
+    let total_pages = document.pages().len() as usize;
+    drop(document); // Release the document borrow
 
-    info!("Analysis completed successfully!");
+    // Validate page range
+    config.validate_page_range(total_pages)?;
+
+    // Get the page range to process
+    let page_range = config.get_page_range(total_pages);
+    info!(
+        "Processing pages: {:?} (total pages in PDF: {})",
+        page_range, total_pages
+    );
+
+    // Analyze each page in the range
+    for &page_num in &page_range {
+        info!("Processing page {} of {}", page_num + 1, page_range.len());
+        let _layouts = analyzer.analyze_page(
+            &config.input_path,
+            page_num,
+            &config.output_dir,
+            config.debug,
+        )?;
+    }
+
+    info!(
+        "Analysis completed successfully for {} pages!",
+        page_range.len()
+    );
     Ok(())
 }
