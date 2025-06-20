@@ -201,8 +201,6 @@ impl PaddleDetSession<PaddleDet> {
         // 4. Contour finding
         let img_contours = find_contours(&dilate_img);
 
-        let max_side_thresh = 3.0;
-
         for contour in img_contours {
             if contour.points.len() <= 2 {
                 continue;
@@ -211,7 +209,7 @@ impl PaddleDetSession<PaddleDet> {
             // 5. Minimum area rectangle
             let mut max_side = 0.0;
             let min_box = self.get_mini_box(&contour.points, &mut max_side);
-            if max_side < max_side_thresh {
+            if max_side < config.max_side_thresh {
                 continue;
             }
 
@@ -229,7 +227,7 @@ impl PaddleDetSession<PaddleDet> {
 
             let mut max_side_clip = 0.0;
             let clip_min_box = self.get_mini_box(&clip_box, &mut max_side_clip);
-            if max_side_clip < max_side_thresh + 2.0 {
+            if max_side_clip < config.max_side_thresh + 2.0 {
                 continue;
             }
 
@@ -239,7 +237,8 @@ impl PaddleDetSession<PaddleDet> {
             detections.push(TextDetection { bbox, proba: score });
         }
 
-        detections
+        // 合并完全包含的文本框
+        self.merge_bboxes(detections)
     }
 
     // Convert contour points to bounding box
@@ -267,7 +266,16 @@ impl PaddleDetSession<PaddleDet> {
         let min = glam::Vec2::new(min_x * scale_x, min_y * scale_y);
         let max = glam::Vec2::new(max_x * scale_x, max_y * scale_y);
 
-        Bbox::new(min, max)
+        // Apply text padding
+        let config = self.model.config();
+        let padding = config.text_padding;
+        let padded_min = glam::Vec2::new((min.x - padding).max(0.0), (min.y - padding).max(0.0));
+        let padded_max = glam::Vec2::new(
+            (max.x + padding).min(extra.original_shape.0 as f32),
+            (max.y + padding).min(extra.original_shape.1 as f32),
+        );
+
+        Bbox::new(padded_min, padded_max)
     }
 
     // === 辅助方法 ===
@@ -465,6 +473,37 @@ impl PaddleDetSession<PaddleDet> {
         })?;
 
         Ok(())
+    }
+
+    /// 合并完全包含的文本框
+    fn merge_bboxes(&self, detections: Vec<TextDetection>) -> Vec<TextDetection> {
+        let mut merged = Vec::new();
+        let mut used = vec![false; detections.len()];
+
+        for (i, det) in detections.iter().enumerate() {
+            if used[i] {
+                continue;
+            }
+            let mut cur_bbox = det.bbox;
+            let mut cur_proba = det.proba;
+            // 检查是否有被包含或包含的情况
+            for (j, other) in detections.iter().enumerate().skip(i + 1) {
+                if used[j] {
+                    continue;
+                }
+                if cur_bbox.contains(&other.bbox) || other.bbox.contains(&cur_bbox) {
+                    cur_bbox = cur_bbox.union(&other.bbox);
+                    cur_proba = cur_proba.max(other.proba);
+                    used[j] = true;
+                }
+            }
+            used[i] = true;
+            merged.push(TextDetection {
+                bbox: cur_bbox,
+                proba: cur_proba,
+            });
+        }
+        merged
     }
 }
 
@@ -767,5 +806,83 @@ mod tests {
         assert_eq!(extra.original_shape, (800, 600));
         assert_eq!(extra.resized_shape, (960, 720));
         assert!(extra.layout_bbox.is_some());
+    }
+
+    #[test]
+    fn test_paddle_det_config() {
+        use crate::inference::paddle::detect::model::PaddleDetConfig;
+
+        // Test default configuration
+        let config = PaddleDetConfig::default();
+        assert_eq!(config.max_side_thresh, 3.0);
+        assert_eq!(config.text_padding, 2.0);
+        assert_eq!(config.det_db_thresh, 0.3);
+        assert_eq!(config.det_db_box_thresh, 0.6);
+
+        // Test custom configuration
+        let custom_config = PaddleDetConfig {
+            max_side_thresh: 5.0,
+            text_padding: 4.0,
+            det_db_thresh: 0.4,
+            det_db_box_thresh: 0.7,
+            ..PaddleDetConfig::default()
+        };
+
+        assert_eq!(custom_config.max_side_thresh, 5.0);
+        assert_eq!(custom_config.text_padding, 4.0);
+        assert_eq!(custom_config.det_db_thresh, 0.4);
+        assert_eq!(custom_config.det_db_box_thresh, 0.7);
+    }
+
+    #[test]
+    fn test_text_padding_application() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::inference::paddle::detect::model::PaddleDet;
+        use crate::inference::paddle::detect::model::PaddleDetConfig;
+
+        // Create a session with custom padding
+        let session_builder = Session::builder()?
+            .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
+            .with_optimization_level(GraphOptimizationLevel::Level1)?;
+
+        let config = PaddleDetConfig {
+            text_padding: 5.0,
+            ..PaddleDetConfig::default()
+        };
+        let model = PaddleDet::with_config(config);
+        let session = PaddleDetSession::new(session_builder, model)?;
+
+        // Test that padding is applied correctly in bbox conversion
+        let extra = DetExtra {
+            original_shape: (1000, 800),
+            resized_shape: (960, 720),
+            layout_bbox: None,
+        };
+
+        // Create test points that would result in a bbox at (100, 100) to (200, 150)
+        let test_points = vec![
+            imageproc::point::Point::new(100.0, 100.0),
+            imageproc::point::Point::new(200.0, 100.0),
+            imageproc::point::Point::new(200.0, 150.0),
+            imageproc::point::Point::new(100.0, 150.0),
+        ];
+
+        let bbox = session.points_to_bbox(&test_points, &extra);
+
+        // With 5.0 padding, the bbox should be expanded by 5 pixels on each side
+        // Scale factor: 1000/960 ≈ 1.042, 800/720 ≈ 1.111
+        let scale_x = 1000.0_f32 / 960.0;
+        let scale_y = 800.0_f32 / 720.0;
+
+        let expected_min_x = (100.0 * scale_x - 5.0).max(0.0);
+        let expected_min_y = (100.0 * scale_y - 5.0).max(0.0);
+        let expected_max_x = (200.0 * scale_x + 5.0).min(1000.0);
+        let expected_max_y = (150.0 * scale_y + 5.0).min(800.0);
+
+        assert!((bbox.min.x - expected_min_x).abs() < 0.1);
+        assert!((bbox.min.y - expected_min_y).abs() < 0.1);
+        assert!((bbox.max.x - expected_max_x).abs() < 0.1);
+        assert!((bbox.max.y - expected_max_y).abs() < 0.1);
+
+        Ok(())
     }
 }

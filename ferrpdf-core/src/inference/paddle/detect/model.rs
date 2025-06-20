@@ -20,6 +20,11 @@ pub struct PaddleDetConfig {
     pub det_db_box_thresh: f32,
     pub det_db_unclip_ratio: f32,
     pub max_candidates: usize,
+    /// Minimum side length threshold for text detection
+    pub max_side_thresh: f32,
+    /// Padding to add around detected text bounding boxes (in pixels)
+    pub text_padding: f32,
+    pub merge_distance_thresh: f32,
 }
 
 impl Default for PaddleDetConfig {
@@ -34,6 +39,9 @@ impl Default for PaddleDetConfig {
             det_db_box_thresh: 0.6,
             det_db_unclip_ratio: 1.5,
             max_candidates: 1000,
+            max_side_thresh: 3.0,
+            text_padding: 3.0,
+            merge_distance_thresh: 5.0,
         }
     }
 }

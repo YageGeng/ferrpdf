@@ -484,6 +484,25 @@ impl Bbox {
             PdfPoints::new(min_max.z), // max_x
         )
     }
+
+    /// Calculates the minimum distance between two bounding boxes (0 if they overlap).
+    pub fn distance(&self, other: &Self) -> f32 {
+        let dx = if self.max.x < other.min.x {
+            other.min.x - self.max.x
+        } else if other.max.x < self.min.x {
+            self.min.x - other.max.x
+        } else {
+            0.0
+        };
+        let dy = if self.max.y < other.min.y {
+            other.min.y - self.max.y
+        } else if other.max.y < self.min.y {
+            self.min.y - other.max.y
+        } else {
+            0.0
+        };
+        (dx.powi(2) + dy.powi(2)).sqrt()
+    }
 }
 
 #[cfg(test)]
