@@ -1,14 +1,16 @@
 # FerrPDF
 
-A Rust-based PDF layout analysis tool that combines PDF rendering with deep learning-based document layout detection.
+A Rust-based PDF content extraction tool that combines PDF rendering with deep learning-based document layout detection and OCR text recognition. This project is inspired by and builds upon the excellent work of [ferrules](https://github.com/AmineDiro/ferrules).
 
 ## Features
 
 - **PDF to Image Conversion**: Convert PDF pages to high-quality images using PDFium
 - **Layout Analysis**: Detect and classify document elements using YOLOv12 model trained on DocLayNet
-- **Bounding Box Visualization**: Draw detected layout elements with color-coded bounding boxes
+- **Text Detection & OCR**: Extract text content using PaddleOCR with PaddlePaddle models
+- **Bounding Box Visualization**: Draw detected layout elements and text regions with color-coded bounding boxes
 - **Reading Order Sorting**: Automatically sort detected elements in natural reading order
 - **Multi-column Support**: Handle both single and multi-column document layouts
+- **Text Line Merging**: Intelligently merge overlapping text detections into coherent text lines
 
 ## Detected Layout Elements
 
@@ -26,6 +28,19 @@ The tool can detect and classify the following document elements:
 - Text
 - Title
 
+## OCR Capabilities
+
+### Text Detection
+- **PaddleOCR Detection**: Uses PaddlePaddle's text detection model to locate text regions
+- **Layout-Aware Detection**: Detects text within specific layout regions (e.g., text blocks, tables)
+- **Confidence Scoring**: Each text detection includes confidence probability
+- **Bounding Box Extraction**: Precise text region coordinates with proper scaling
+
+### Text Recognition
+- **PaddleOCR Recognition**: Uses PaddlePaddle's text recognition model for OCR
+- **Multi-language Support**: Supports various languages and character sets
+- **High Accuracy**: State-of-the-art recognition accuracy on printed text
+
 ## Installation
 
 ### Prerequisites
@@ -36,6 +51,8 @@ The tool can detect and classify the following document elements:
    ```
 
 2. **Rust**: Install Rust from [rustup.rs](https://rustup.rs/)
+
+3. **ONNX Runtime**: Required for model inference (automatically handled by dependencies)
 
 ### Build
 
@@ -48,10 +65,10 @@ cargo build --release
 
 ### Analyze Tool (Recommended)
 
-The `analyze` tool combines PDF rendering and layout analysis in a single command:
+The `analyze` tool combines PDF rendering, layout analysis, and OCR text extraction in a single command:
 
 ```bash
-# Analyze first page of a PDF
+# Analyze first page of a PDF with OCR
 cargo run --bin analyze -- input.pdf
 
 # Analyze specific page (0-based indexing)
@@ -73,7 +90,8 @@ cargo run --bin analyze -- "document.pdf" --page 0 --output analysis_results
 #### Output Files
 
 - `page-{N}.jpg`: Original page rendered as image
-- `analysis-page-{N}.jpg`: Analysis result with bounding boxes and labels
+- `analysis-page-{N}.jpg`: Layout analysis result with bounding boxes and labels
+- `text-detection-page-{N}.jpg`: Text detection visualization with bounding boxes and confidence scores
 
 ### Individual Tools
 
@@ -99,6 +117,14 @@ The following constants can be adjusted in `src/consts.rs`:
 - `NMS_IOU_THRESHOLD`: IoU threshold for Non-Maximum Suppression (default: 0.45)
 - `REQUIRED_WIDTH/HEIGHT`: Model input dimensions (1024x1024)
 
+### PaddleOCR Configuration
+
+PaddleOCR detection and recognition models can be configured with custom parameters:
+
+- **Detection Thresholds**: Adjust text detection confidence and IoU thresholds
+- **Line Merging**: Configure text line merging parameters for better text extraction
+- **Post-processing**: Customize DB (Differentiable Binarization) post-processing parameters
+
 ### NMS Algorithm
 
 The tool uses an advanced NMS algorithm that:
@@ -112,7 +138,7 @@ The tool uses an advanced NMS algorithm that:
 ### Basic Usage
 
 ```bash
-# Analyze a research paper
+# Analyze a research paper with OCR
 cargo run --bin analyze -- "research_paper.pdf"
 
 # Analyze page 3 of a document
@@ -120,29 +146,6 @@ cargo run --bin analyze -- "document.pdf" --page 3
 
 # Save results to custom directory
 cargo run --bin analyze -- "document.pdf" --output my_analysis
-```
-
-### Expected Output
-
-```
-=== PDF Layout Analysis Summary ===
-Input PDF: document.pdf
-Analyzed page: 0
-Total detections: 12
-Confidence threshold: 0.2
-NMS IoU threshold: 0.45
-
-Detected elements:
-  1. Title (95.2%)
-  2. Text (89.7%)
-  3. Section-Header (87.3%)
-  4. Text (85.9%)
-  5. Figure (82.1%)
-  6. Caption (78.4%)
-  7. Text (76.8%)
-  8. Table (74.5%)
-  9. Text (72.1%)
-  10. Page-Footer (68.9%)
 ```
 
 ## Architecture
@@ -153,14 +156,30 @@ Detected elements:
 - **`analysis/labels.rs`**: Document element classification labels
 - **`inference/session.rs`**: ONNX Runtime integration and model inference
 - **`layout/element.rs`**: Layout element data structures
+- **`inference/paddle/`**: PaddleOCR detection and recognition models
+- **`inference/yolov12/`**: YOLOv12 layout detection model
 
 ### Key Algorithms
 
 1. **Image Preprocessing**: Resize and normalize images for model input
-2. **YOLO Inference**: Run YOLOv12 model for object detection
-3. **Bounding Box Extraction**: Convert model outputs to layout elements
-4. **Advanced NMS**: Merge overlapping detections with union bounding boxes
-5. **Reading Order Sorting**: Sort elements for natural document flow
+2. **YOLO Inference**: Run YOLOv12 model for layout element detection
+3. **Layout-Aware Text Detection**: Use PaddleOCR to detect text within layout regions
+4. **Text Recognition**: Extract text content using PaddleOCR recognition model
+5. **Text Line Merging**: Intelligently merge overlapping text detections
+6. **Advanced NMS**: Merge overlapping detections with union bounding boxes
+7. **Reading Order Sorting**: Sort elements for natural document flow
+
+### Model Pipeline
+
+```
+PDF Page → PDFium Rendering → 1024x1024 Image → YOLOv12 Layout Detection
+                                                      ↓
+                                              Layout Regions → PaddleOCR Text Detection
+                                                      ↓
+                                              Text Regions → PaddleOCR Text Recognition
+                                                      ↓
+                                              Extracted Text + Coordinates
+```
 
 ## Development
 
@@ -181,6 +200,10 @@ cargo clippy
 ```bash
 cargo doc --open
 ```
+
+## Acknowledgments
+
+This project is inspired by and builds upon the excellent work of [ferrules](https://github.com/AmineDiro/ferrules), a comprehensive document analysis framework. We extend our gratitude to the ferrules project for providing the foundation and inspiration for this PDF content extraction tool.
 
 ## License
 
@@ -219,8 +242,14 @@ This project is licensed under the MIT License - see the LICENSE file for detail
    Solution: Adjust PROBA_THRESHOLD or try different NMS_IOU_THRESHOLD
    ```
 
+5. **OCR Text Recognition Issues**
+   ```
+   Solution: Ensure text is clear and properly rendered, adjust detection thresholds
+   ```
+
 ### Performance Tips
 
 - Use release builds for better performance: `cargo build --release`
 - Consider batch processing for multiple PDFs
 - Adjust model thresholds based on document type
+- For large documents, process pages individually to manage memory usage
