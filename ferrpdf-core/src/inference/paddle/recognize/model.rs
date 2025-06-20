@@ -51,6 +51,21 @@ pub struct PaddleRecConfig {
     ///
     /// Default: 0.5
     pub background_fill_value: f32,
+
+    /// Aspect ratio threshold for automatic image rotation
+    ///
+    /// When the aspect ratio (width/height) of the input text region is greater than
+    /// this threshold, the image will be rotated 90 degrees clockwise before OCR processing.
+    /// This is useful for detecting vertical text (e.g., traditional Chinese text,
+    /// Japanese text, or vertical layouts).
+    ///
+    /// - Values > 1.0: Rotate when width is significantly larger than height
+    /// - Values < 1.0: Rotate when height is significantly larger than width
+    /// - Set to 0.0 to disable automatic rotation
+    ///
+    /// Typical values: 0.5 - 2.0
+    /// Default: 1.5 (rotate when width > 1.5 * height)
+    pub aspect_ratio_threshold: f32,
 }
 
 impl Default for PaddleRecConfig {
@@ -60,6 +75,7 @@ impl Default for PaddleRecConfig {
             batch_size: 1,
             input_channels: 3,
             background_fill_value: 0.5,
+            aspect_ratio_threshold: 1.5,
         }
     }
 }

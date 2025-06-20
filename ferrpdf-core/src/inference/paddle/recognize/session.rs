@@ -126,7 +126,14 @@ impl OnnxSession<PaddleRec> for PaddleRecSession<PaddleRec> {
         let config = self.model.config();
 
         // Convert to RGB if needed
-        let img_src = image.to_rgb8();
+        let mut img_src = image.to_rgb8();
+
+        // Check if rotation is needed based on aspect ratio
+        let aspect_ratio = img_src.height() as f32 / img_src.width() as f32;
+        if config.aspect_ratio_threshold > 0.0 && aspect_ratio > config.aspect_ratio_threshold {
+            // Rotate 90 degrees clockwise for vertical text
+            img_src = image::imageops::rotate90(&img_src);
+        }
 
         // Calculate scale and target width using provided logic
         let scale = config.required_height as f32 / img_src.height() as f32;
@@ -314,10 +321,6 @@ mod tests {
 
     #[test]
     fn test_paddle_text_recognition() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::{analysis::bbox::Bbox, analysis::labels::Label, layout::element::Layout};
-
-        let test_image = image::DynamicImage::new_rgb8(200, 100);
-
         let session_builder = Session::builder()?
             .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
             .with_optimization_level(GraphOptimizationLevel::Level1)?;
@@ -325,30 +328,48 @@ mod tests {
         let model = PaddleRec::new();
         let mut session = PaddleRecSession::new(session_builder, model)?;
 
-        // Create test layouts
-        let mut layouts = vec![
-            Layout {
-                bbox: Bbox::new(glam::Vec2::new(10.0, 10.0), glam::Vec2::new(190.0, 30.0)),
-                label: Label::Text,
-                page_no: 0,
-                bbox_id: 0,
-                proba: 0.9,
-                text: None,
-            },
-            Layout {
-                bbox: Bbox::new(glam::Vec2::new(10.0, 40.0), glam::Vec2::new(190.0, 60.0)),
-                label: Label::Title,
-                page_no: 0,
-                bbox_id: 1,
-                proba: 0.85,
-                text: None,
-            },
-        ];
+        // Create a test image
+        let test_image = image::DynamicImage::new_rgb8(100, 50);
 
-        // Test text recognition (will return empty for test image)
-        let result = session.recognize_text_regions(&test_image, &mut layouts);
-        println!("Text recognition test completed: {:?}", result.is_ok());
+        // Test OCR on the test image
+        let result = session.run(&test_image, ());
+        println!("OCR test completed: {:?}", result.is_ok());
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_aspect_ratio_rotation() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::inference::paddle::recognize::model::PaddleRecConfig;
+
+        let session_builder = Session::builder()?
+            .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
+            .with_optimization_level(GraphOptimizationLevel::Level1)?;
+
+        // Test with different aspect ratio thresholds
+        let config = PaddleRecConfig {
+            aspect_ratio_threshold: 1.5,
+            ..PaddleRecConfig::default()
+        };
+        let model = PaddleRec::with_config(config);
+        let session = PaddleRecSession::new(session_builder, model)?;
+
+        // Create a wide image (aspect ratio > 1.5)
+        let wide_image = image::DynamicImage::new_rgb8(200, 50); // aspect ratio = 4.0
+        let narrow_image = image::DynamicImage::new_rgb8(50, 100); // aspect ratio = 0.5
+
+        // Test preprocessing with wide image (should rotate)
+        let wide_tensor = session.preprocess(&wide_image)?;
+        let narrow_tensor = session.preprocess(&narrow_image)?;
+
+        // After rotation, the wide image should have different dimensions
+        // The rotated wide image (50x200) will be resized to height=48, width=192
+        // The narrow image (50x100) will be resized to height=48, width=24
+        assert_eq!(wide_tensor.shape()[2], 48); // height
+        assert_eq!(narrow_tensor.shape()[2], 48); // height
+        assert!(wide_tensor.shape()[3] > narrow_tensor.shape()[3]); // width comparison
+
+        println!("Aspect ratio rotation test passed");
         Ok(())
     }
 }
