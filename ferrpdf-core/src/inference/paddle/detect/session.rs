@@ -615,7 +615,7 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
         let output = self
             .session
             .run(ort::inputs![
-                input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "input"})?
+                input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "detec-tinput"})?
             ])
             .context(InferenceSnafu {})?;
 
@@ -624,36 +624,24 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
             .get(output_name)
             .context(NotFoundOutputSnafu { output_name })?
             .try_extract_array::<f32>()
-            .context(TensorSnafu { stage: "extract" })?;
+            .context(TensorSnafu {
+                stage: "detect-extract",
+            })?;
 
         // Convert to owned array with proper shape
         let shape = tensor.shape();
-        let output_array = if shape.len() == 4 {
-            // Remove batch dimension if present and convert to 3D
-            let slice_3d = tensor.slice(ndarray::s![0, .., .., ..]);
-            Array3::from_shape_vec(
-                (
-                    slice_3d.shape()[0],
-                    slice_3d.shape()[1],
-                    slice_3d.shape()[2],
-                ),
-                slice_3d.iter().cloned().collect(),
-            )
-            .unwrap()
-        } else if shape.len() == 3 {
-            Array3::from_shape_vec(
-                (shape[0], shape[1], shape[2]),
-                tensor.iter().cloned().collect(),
-            )
-            .unwrap()
-        } else {
-            // Reshape to 3D if needed
-            let total_elements = tensor.len();
-            let h = shape[shape.len() - 2];
-            let w = shape[shape.len() - 1];
-            let c = total_elements / (h * w);
-            Array3::from_shape_vec((c, h, w), tensor.iter().cloned().collect()).unwrap()
-        };
+
+        // Remove batch dimension if present and convert to 3D
+        let slice_3d = tensor.slice(ndarray::s![0, .., .., ..]);
+        let output_array = Array3::from_shape_vec(
+            (
+                slice_3d.shape()[0],
+                slice_3d.shape()[1],
+                slice_3d.shape()[2],
+            ),
+            slice_3d.iter().cloned().collect(),
+        )
+        .context(ShapeSnafu { stage: "detect" })?;
 
         Ok(output_array)
     }

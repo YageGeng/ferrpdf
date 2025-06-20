@@ -146,12 +146,7 @@ impl OnnxSession<PaddleRec> for PaddleRecSession<PaddleRec> {
             config.required_height as u32,
             FilterType::Triangle,
         );
-        // src_resize
-        //     .save(format!(
-        //         "images/{}.jpg",
-        //         src_resize.dimensions().0 * src_resize.dimensions().1
-        //     ))
-        //     .ok();
+
         // Create input tensor with shape [batch_size, channels, height, width]
         let mut input_tensor = Array4::zeros([
             config.batch_size,
@@ -220,7 +215,7 @@ impl OnnxSession<PaddleRec> for PaddleRecSession<PaddleRec> {
         let output = self
             .session
             .run(ort::inputs![
-                input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "input"})?
+                input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "recognize-input"})?
             ])
             .context(InferenceSnafu {})?;
 
@@ -229,27 +224,17 @@ impl OnnxSession<PaddleRec> for PaddleRecSession<PaddleRec> {
             .get(output_name)
             .context(NotFoundOutputSnafu { output_name })?
             .try_extract_array::<f32>()
-            .context(TensorSnafu { stage: "extract" })?;
+            .context(TensorSnafu {
+                stage: "recognize-extract",
+            })?;
 
         // Get the actual output shape and convert to owned array
         // Reshape to 3D array [batch_size, sequence_length, vocab_size]
         let shape = tensor.shape();
-        let output_array = if shape.len() == 3 {
-            tensor
-                .to_shape([shape[0], shape[1], shape[2]])
-                .unwrap()
-                .to_owned()
-        } else {
-            // If shape is different, try to reshape to a reasonable 3D form
-            let total_elements = tensor.len();
-            let vocab_size = self.character_dict.len().max(1);
-            let batch_size = 1;
-            let seq_len = total_elements / (batch_size * vocab_size);
-            tensor
-                .to_shape([batch_size, seq_len, vocab_size])
-                .unwrap()
-                .to_owned()
-        };
+        let output_array = tensor
+            .to_shape([shape[0], shape[1], shape[2]])
+            .context(ShapeSnafu { stage: "recognize" })?
+            .to_owned();
 
         Ok(output_array)
     }

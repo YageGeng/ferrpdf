@@ -125,7 +125,7 @@ impl OnnxSession<Yolov12> for YoloSession<Yolov12> {
         let output = self
             .session
             .run(ort::inputs![
-                input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "input"})?
+                input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "layout-input"})?
             ])
             .context(InferenceSnafu {})?;
 
@@ -134,12 +134,14 @@ impl OnnxSession<Yolov12> for YoloSession<Yolov12> {
             .get(output_name)
             .context(NotFoundOutputSnafu { output_name })?
             .try_extract_array::<f32>()
-            .context(TensorSnafu { stage: "extract" })?;
+            .context(TensorSnafu {
+                stage: "layout-extract",
+            })?;
 
         // Reshape tensor to expected output dimensions and return owned copy
         let output = tensor
             .to_shape(self.model.config().output_size)
-            .context(ShapeSnafu { stage: "output" })?
+            .context(ShapeSnafu { stage: "layout" })?
             .to_owned();
 
         Ok(output)
