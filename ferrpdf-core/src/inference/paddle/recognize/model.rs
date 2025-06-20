@@ -11,10 +11,45 @@ pub struct PaddleRec {
 pub type PaddleInput = ArrayBase<OwnedRepr<f32>, Dim<[usize; 4]>>;
 pub type PaddleOutput = ArrayBase<OwnedRepr<f32>, Dim<[usize; 3]>>;
 
+/// Configuration for PaddleOCR text recognition model
+///
+/// This configuration controls various aspects of the text recognition (OCR) process,
+/// including model input requirements and preprocessing parameters.
+#[derive(Debug, Clone)]
 pub struct PaddleRecConfig {
+    /// Required input height for the model (model expects this exact height)
+    ///
+    /// The model requires a fixed height for text line images. Text regions will be
+    /// resized to this height while maintaining aspect ratio. The width is calculated
+    /// automatically based on the aspect ratio of the input text region.
+    ///
+    /// Typical values: 32, 48, 64
+    /// Default: 48
     pub required_height: usize,
+
+    /// Batch size for model inference
+    ///
+    /// Currently only supports batch size of 1. This parameter is kept for future
+    /// batch processing capabilities.
+    ///
+    /// Default: 1
     pub batch_size: usize,
+
+    /// Number of input channels (RGB = 3)
+    ///
+    /// The model expects RGB images with 3 channels. This should not be changed
+    /// unless the model architecture is modified.
+    ///
+    /// Default: 3
     pub input_channels: usize,
+
+    /// Background fill value for input tensor padding
+    ///
+    /// When resizing text regions to fit the required dimensions, padding may be added.
+    /// This value (normalized to [-1, 1] range) is used to fill the padding areas.
+    /// Default is 0.5 (gray in normalized space).
+    ///
+    /// Default: 0.5
     pub background_fill_value: f32,
 }
 

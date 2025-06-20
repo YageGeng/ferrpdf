@@ -237,7 +237,7 @@ impl PaddleDetSession<PaddleDet> {
             detections.push(TextDetection { bbox, proba: score });
         }
 
-        // 合并完全包含的文本框
+        // Merge completely contained text boxes
         self.merge_bboxes(detections)
     }
 
@@ -278,9 +278,9 @@ impl PaddleDetSession<PaddleDet> {
         Bbox::new(padded_min, padded_max)
     }
 
-    // === 辅助方法 ===
+    // === Helper methods ===
 
-    // 最小外接矩形
+    // Minimum bounding rectangle
     fn get_mini_box(
         &self,
         points: &[imageproc::point::Point<i32>],
@@ -344,19 +344,19 @@ impl PaddleDetSession<PaddleDet> {
         box_points
     }
 
-    // 计算分数
+    // Calculate score
     fn get_score(
         &self,
         contour: &imageproc::contours::Contour<i32>,
         f_map_mat: &image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
     ) -> f32 {
-        // 初始化边界值
+        // Initialize boundary values
         let mut xmin = i32::MAX;
         let mut xmax = i32::MIN;
         let mut ymin = i32::MAX;
         let mut ymax = i32::MIN;
 
-        // 找到轮廓的边界框
+        // Find bounding box of contour
         for point in contour.points.iter() {
             let x = point.x;
             let y = point.y;
@@ -408,7 +408,7 @@ impl PaddleDetSession<PaddleDet> {
         )
         .to_image();
 
-        // 计算均值
+        // Calculate mean
         let mut sum = 0.0;
         let mut count = 0;
         for (x, y, pixel) in cropped_img.enumerate_pixels() {
@@ -420,7 +420,7 @@ impl PaddleDetSession<PaddleDet> {
         if count == 0 { 0.0 } else { sum / count as f32 }
     }
 
-    // unclip - simplified version without geo-clipper dependency
+    // Unclip - simplified version without geo-clipper dependency
     fn unclip(
         &self,
         box_points: &[imageproc::point::Point<f32>],
@@ -431,6 +431,37 @@ impl PaddleDetSession<PaddleDet> {
             .iter()
             .map(|p| imageproc::point::Point::new(p.x as i32, p.y as i32))
             .collect()
+    }
+
+    /// Merge completely contained text boxes
+    fn merge_bboxes(&self, detections: Vec<TextDetection>) -> Vec<TextDetection> {
+        let mut merged = Vec::new();
+        let mut used = vec![false; detections.len()];
+
+        for (i, det) in detections.iter().enumerate() {
+            if used[i] {
+                continue;
+            }
+            let mut cur_bbox = det.bbox;
+            let mut cur_proba = det.proba;
+            // Check for containment relationships
+            for (j, other) in detections.iter().enumerate().skip(i + 1) {
+                if used[j] {
+                    continue;
+                }
+                if cur_bbox.contains(&other.bbox) || other.bbox.contains(&cur_bbox) {
+                    cur_bbox = cur_bbox.union(&other.bbox);
+                    cur_proba = cur_proba.max(other.proba);
+                    used[j] = true;
+                }
+            }
+            used[i] = true;
+            merged.push(TextDetection {
+                bbox: cur_bbox,
+                proba: cur_proba,
+            });
+        }
+        merged
     }
 
     pub fn draw<P: AsRef<Path>>(
@@ -473,37 +504,6 @@ impl PaddleDetSession<PaddleDet> {
         })?;
 
         Ok(())
-    }
-
-    /// 合并完全包含的文本框
-    fn merge_bboxes(&self, detections: Vec<TextDetection>) -> Vec<TextDetection> {
-        let mut merged = Vec::new();
-        let mut used = vec![false; detections.len()];
-
-        for (i, det) in detections.iter().enumerate() {
-            if used[i] {
-                continue;
-            }
-            let mut cur_bbox = det.bbox;
-            let mut cur_proba = det.proba;
-            // 检查是否有被包含或包含的情况
-            for (j, other) in detections.iter().enumerate().skip(i + 1) {
-                if used[j] {
-                    continue;
-                }
-                if cur_bbox.contains(&other.bbox) || other.bbox.contains(&cur_bbox) {
-                    cur_bbox = cur_bbox.union(&other.bbox);
-                    cur_proba = cur_proba.max(other.proba);
-                    used[j] = true;
-                }
-            }
-            used[i] = true;
-            merged.push(TextDetection {
-                bbox: cur_bbox,
-                proba: cur_proba,
-            });
-        }
-        merged
     }
 }
 
@@ -815,7 +815,7 @@ mod tests {
         // Test default configuration
         let config = PaddleDetConfig::default();
         assert_eq!(config.max_side_thresh, 3.0);
-        assert_eq!(config.text_padding, 2.0);
+        assert_eq!(config.text_padding, 3.0);
         assert_eq!(config.det_db_thresh, 0.3);
         assert_eq!(config.det_db_box_thresh, 0.6);
 
