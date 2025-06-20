@@ -9,14 +9,10 @@ use ort::session::Session;
 use pdfium_render::prelude::*;
 use tracing::{error, info};
 
-use ferrpdf_core::consts::*;
 use ferrpdf_core::inference::model::OnnxSession;
-use ferrpdf_core::inference::paddle::detect::model::PaddleDet;
-use ferrpdf_core::inference::paddle::detect::session::{PaddleDetSession, TextDetection};
-use ferrpdf_core::inference::paddle::recognize::model::PaddleRec;
-use ferrpdf_core::inference::paddle::recognize::session::PaddleRecSession;
-use ferrpdf_core::inference::yolov12::model::Yolov12;
-use ferrpdf_core::inference::yolov12::session::{DocMeta, YoloSession};
+use ferrpdf_core::inference::paddle::detect::*;
+use ferrpdf_core::inference::paddle::recognize::*;
+use ferrpdf_core::inference::yolov12::*;
 use ort::execution_providers::CPUExecutionProvider;
 use ort::session::builder::GraphOptimizationLevel;
 
@@ -494,31 +490,6 @@ impl AnalysisConfig {
         }
 
         Ok(output_path)
-    }
-}
-
-/// Print analysis summary to console
-#[allow(dead_code)]
-fn print_analysis_summary(input_path: &str, page_num: usize, layouts: &[Layout]) {
-    println!("\n=== PDF Layout Analysis Summary ===");
-    println!("Input PDF: {}", input_path);
-    println!("Analyzed page: {}", page_num);
-    println!("Total detections: {}", layouts.len());
-    println!("Confidence threshold: {}", PROBA_THRESHOLD);
-    println!("NMS IoU threshold: {}", NMS_IOU_THRESHOLD);
-
-    if !layouts.is_empty() {
-        println!("\nDetected elements:");
-        for (i, layout) in layouts.iter().enumerate() {
-            println!(
-                "  {}. {} ({:.1}%)",
-                i + 1,
-                layout.label.name(),
-                layout.proba * 100.0
-            );
-        }
-    } else {
-        println!("\nNo layout elements detected.");
     }
 }
 
