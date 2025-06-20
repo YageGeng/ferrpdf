@@ -424,34 +424,185 @@ impl YoloSession<Yolov12> {
         layouts.extend(right_column);
     }
 
-    /// Sorts single column layout by reading order: top-to-bottom, left-to-right for same-line elements
+    /// Sorts single column layout by reading order with special handling for headers, titles, and footers
     fn sort_single_column_layout(&self, layouts: &mut [Layout]) {
         layouts.sort_by(|a, b| {
-            // TODO: order with Label
-            if a.label == Label::PageHeader || a.label == Label::Title {
-                return std::cmp::Ordering::Less;
-            } else if a.label == Label::PageFooter {
-                return std::cmp::Ordering::Greater;
-            }
+            // Special priority ordering:
+            // 1. PageHeader (highest priority, sorted by Y coordinate)
+            // 2. Title (second priority, sorted by Y coordinate)
+            // 3. Regular elements (sorted by Y coordinate, then X coordinate)
+            // 4. PageFooter (lowest priority, sorted by Y coordinate)
 
-            let a_center = a.bbox.center();
-            let b_center = b.bbox.center();
+            match (&a.label, &b.label) {
+                // PageHeader vs PageHeader: compare Y coordinates
+                (Label::PageHeader, Label::PageHeader) => a
+                    .bbox
+                    .center()
+                    .y
+                    .partial_cmp(&b.bbox.center().y)
+                    .unwrap_or(std::cmp::Ordering::Equal),
 
-            // Primary sort: by Y coordinate (top to bottom)
-            let y_diff = a_center.y - b_center.y;
+                // PageHeader vs Title: PageHeader always comes first
+                (Label::PageHeader, Label::Title) => std::cmp::Ordering::Less,
 
-            if y_diff.abs() <= self.model.config().y_tolerance_threshold {
-                // Elements are on roughly the same line, sort by X coordinate (left to right)
-                a_center
-                    .x
-                    .partial_cmp(&b_center.x)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            } else {
-                // Different lines, sort by Y coordinate
-                y_diff
-                    .partial_cmp(&0.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                // PageHeader vs others: PageHeader always comes first
+                (Label::PageHeader, _) => std::cmp::Ordering::Less,
+
+                // Title vs PageHeader: Title comes after PageHeader
+                (Label::Title, Label::PageHeader) => std::cmp::Ordering::Greater,
+
+                // Title vs Title: compare Y coordinates
+                (Label::Title, Label::Title) => a
+                    .bbox
+                    .center()
+                    .y
+                    .partial_cmp(&b.bbox.center().y)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+
+                // Title vs PageFooter: Title comes before PageFooter
+                (Label::Title, Label::PageFooter) => std::cmp::Ordering::Less,
+
+                // Title vs others: Title comes before regular elements
+                (Label::Title, _) => std::cmp::Ordering::Less,
+
+                // PageFooter vs PageHeader/Title: PageFooter always comes last
+                (Label::PageFooter, Label::PageHeader | Label::Title) => {
+                    std::cmp::Ordering::Greater
+                }
+
+                // PageFooter vs PageFooter: compare Y coordinates
+                (Label::PageFooter, Label::PageFooter) => a
+                    .bbox
+                    .center()
+                    .y
+                    .partial_cmp(&b.bbox.center().y)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+
+                // PageFooter vs others: PageFooter always comes last
+                (Label::PageFooter, _) => std::cmp::Ordering::Greater,
+
+                // Regular elements vs PageHeader/Title: regular elements come after
+                (_, Label::PageHeader | Label::Title) => std::cmp::Ordering::Greater,
+
+                // Regular elements vs PageFooter: regular elements come before
+                (_, Label::PageFooter) => std::cmp::Ordering::Less,
+
+                // Regular elements vs regular elements: normal reading order
+                (_, _) => {
+                    let a_center = a.bbox.center();
+                    let b_center = b.bbox.center();
+
+                    // Primary sort: by Y coordinate (top to bottom)
+                    let y_diff = a_center.y - b_center.y;
+
+                    if y_diff.abs() <= self.model.config().y_tolerance_threshold {
+                        // Elements are on roughly the same line, sort by X coordinate (left to right)
+                        a_center
+                            .x
+                            .partial_cmp(&b_center.x)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        // Different lines, sort by Y coordinate
+                        y_diff
+                            .partial_cmp(&0.0)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ort::{
+        execution_providers::CPUExecutionProvider, session::builder::GraphOptimizationLevel,
+    };
+
+    use super::*;
+
+    #[test]
+    fn test_layout_sorting() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::analysis::labels::Label;
+        use crate::layout::element::Layout;
+
+        let session_builder = Session::builder()?
+            .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
+            .with_optimization_level(GraphOptimizationLevel::Level1)?;
+
+        let model = Yolov12::new();
+        let session = YoloSession::new(session_builder, model)?;
+
+        // Create test layouts with different labels and positions
+        let mut layouts = vec![
+            Layout {
+                bbox: crate::analysis::bbox::Bbox::new(
+                    glam::Vec2::new(100.0, 50.0),
+                    glam::Vec2::new(200.0, 80.0),
+                ),
+                label: Label::Text,
+                page_no: 0,
+                bbox_id: 0,
+                proba: 0.9,
+                text: None,
+            },
+            Layout {
+                bbox: crate::analysis::bbox::Bbox::new(
+                    glam::Vec2::new(50.0, 30.0),
+                    glam::Vec2::new(150.0, 60.0),
+                ),
+                label: Label::Title,
+                page_no: 0,
+                bbox_id: 1,
+                proba: 0.95,
+                text: None,
+            },
+            Layout {
+                bbox: crate::analysis::bbox::Bbox::new(
+                    glam::Vec2::new(20.0, 10.0),
+                    glam::Vec2::new(120.0, 40.0),
+                ),
+                label: Label::PageHeader,
+                page_no: 0,
+                bbox_id: 2,
+                proba: 0.98,
+                text: None,
+            },
+            Layout {
+                bbox: crate::analysis::bbox::Bbox::new(
+                    glam::Vec2::new(80.0, 200.0),
+                    glam::Vec2::new(180.0, 230.0),
+                ),
+                label: Label::PageFooter,
+                page_no: 0,
+                bbox_id: 3,
+                proba: 0.85,
+                text: None,
+            },
+            Layout {
+                bbox: crate::analysis::bbox::Bbox::new(
+                    glam::Vec2::new(150.0, 100.0),
+                    glam::Vec2::new(250.0, 130.0),
+                ),
+                label: Label::Text,
+                page_no: 0,
+                bbox_id: 4,
+                proba: 0.88,
+                text: None,
+            },
+        ];
+
+        // Sort the layouts
+        session.sort_single_column_layout(&mut layouts);
+
+        // Verify the order: PageHeader -> Title -> Text -> PageFooter
+        assert_eq!(layouts[0].label, Label::PageHeader);
+        assert_eq!(layouts[1].label, Label::Title);
+        assert_eq!(layouts[2].label, Label::Text);
+        assert_eq!(layouts[3].label, Label::Text);
+        assert_eq!(layouts[4].label, Label::PageFooter);
+
+        println!("Layout sorting test passed");
+        Ok(())
     }
 }

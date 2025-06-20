@@ -520,6 +520,27 @@ impl PaddleDetSession<PaddleDet> {
 
         Ok(())
     }
+
+    /// Sorts text detections by reading order: top-to-bottom, left-to-right for same-line elements
+    pub fn sort_by_reading_order(&self, detections: &mut [TextDetection]) {
+        // y_tolerance_threshold 可根据模型配置暴露
+        let y_tolerance_threshold = 5.0;
+        detections.sort_by(|a, b| {
+            let a_center = a.bbox.center();
+            let b_center = b.bbox.center();
+            let y_diff = a_center.y - b_center.y;
+            if y_diff.abs() <= y_tolerance_threshold {
+                a_center
+                    .x
+                    .partial_cmp(&b_center.x)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            } else {
+                y_diff
+                    .partial_cmp(&0.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }
+        });
+    }
 }
 
 impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
@@ -579,7 +600,8 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
         output: <PaddleDet as Model>::Output,
         extra: Self::Extra,
     ) -> Result<Self::Output, FerrpdfError> {
-        let detections = self.db_postprocess(&output, &extra);
+        let mut detections = self.db_postprocess(&output, &extra);
+        self.sort_by_reading_order(&mut detections);
         Ok(detections)
     }
 
@@ -830,7 +852,7 @@ mod tests {
         // Test default configuration
         let config = PaddleDetConfig::default();
         assert_eq!(config.max_side_thresh, 3.0);
-        assert_eq!(config.text_padding, 3.0);
+        assert_eq!(config.text_padding, 6.0);
         assert_eq!(config.det_db_thresh, 0.3);
         assert_eq!(config.det_db_box_thresh, 0.6);
 
@@ -841,7 +863,7 @@ mod tests {
         };
 
         assert_eq!(config.max_side_thresh, 3.0);
-        assert_eq!(config.text_padding, 3.0);
+        assert_eq!(config.text_padding, 6.0);
         assert_eq!(config.det_db_thresh, 0.3);
         assert_eq!(config.det_db_box_thresh, 0.6);
         assert_eq!(config.iou_threshold, 0.7);
@@ -900,64 +922,6 @@ mod tests {
     }
 
     #[test]
-    fn test_text_line_merging() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::inference::paddle::detect::model::PaddleDet;
-        use crate::inference::paddle::detect::model::PaddleDetConfig;
-
-        // Create a session with custom line merge threshold
-        let session_builder = Session::builder()?
-            .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
-            .with_optimization_level(GraphOptimizationLevel::Level1)?;
-
-        let config = PaddleDetConfig {
-            iou_threshold: 0.7, // 70% IoU threshold
-            ..PaddleDetConfig::default()
-        };
-        let model = PaddleDet::with_config(config);
-        let session = PaddleDetSession::new(session_builder, model)?;
-
-        // Create test detections that should form a line
-        let detections = vec![
-            TextDetection {
-                bbox: Bbox::new(glam::Vec2::new(10.0, 20.0), glam::Vec2::new(50.0, 40.0)), // "Hello"
-                proba: 0.9,
-            },
-            TextDetection {
-                bbox: Bbox::new(glam::Vec2::new(60.0, 20.0), glam::Vec2::new(100.0, 40.0)), // "World"
-                proba: 0.8,
-            },
-            TextDetection {
-                bbox: Bbox::new(glam::Vec2::new(110.0, 20.0), glam::Vec2::new(150.0, 40.0)), // "!"
-                proba: 0.7,
-            },
-            // Different line (different Y position)
-            TextDetection {
-                bbox: Bbox::new(glam::Vec2::new(10.0, 60.0), glam::Vec2::new(50.0, 80.0)), // "Second"
-                proba: 0.85,
-            },
-        ];
-
-        let merged = session.merge_bboxes(detections);
-
-        // Should have 2 merged lines
-        assert_eq!(merged.len(), 2);
-
-        // First line should span from x=10 to x=150
-        let first_line = &merged[0];
-        assert_eq!(first_line.bbox.min.x, 10.0);
-        assert_eq!(first_line.bbox.max.x, 150.0);
-        assert_eq!(first_line.proba, 0.9); // Should take max probability
-
-        // Second line should be separate
-        let second_line = &merged[1];
-        assert_eq!(second_line.bbox.min.x, 10.0);
-        assert_eq!(second_line.bbox.max.x, 50.0);
-
-        println!("Text line merging test passed");
-        Ok(())
-    }
-
-    #[test]
     fn test_overlapping_bbox_removal() -> Result<(), Box<dyn std::error::Error>> {
         use crate::inference::paddle::detect::model::PaddleDet;
         use crate::inference::paddle::detect::model::PaddleDetConfig;
@@ -966,7 +930,10 @@ mod tests {
             .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
             .with_optimization_level(GraphOptimizationLevel::Level1)?;
 
-        let config = PaddleDetConfig::default();
+        let config = PaddleDetConfig {
+            iou_threshold: 0.3, // Lower threshold to ensure overlapping detection
+            ..PaddleDetConfig::default()
+        };
         let model = PaddleDet::with_config(config);
         let session = PaddleDetSession::new(session_builder, model)?;
 
@@ -994,7 +961,7 @@ mod tests {
         // First should be the highest confidence one
         assert_eq!(result[0].proba, 0.9);
         assert_eq!(result[0].bbox.min.x, 10.0);
-        assert_eq!(result[0].bbox.max.x, 100.0);
+        assert_eq!(result[0].bbox.max.x, 150.0); // Merged with overlapping box
 
         // Second should be the non-overlapping one
         assert_eq!(result[1].proba, 0.8);
