@@ -105,17 +105,8 @@ pub struct PaddleDetConfig {
     /// and may improve OCR accuracy. The padding is clamped to image boundaries.
     ///
     /// Typical range: 0.0 - 10.0
-    /// Default: 3.0
+    /// Default: 6.0
     pub text_padding: f32,
-
-    /// Distance threshold for merging nearby text boxes (in pixels)
-    ///
-    /// This parameter is currently unused in the current implementation which only
-    /// merges completely contained text boxes. Kept for potential future use in
-    /// more sophisticated merging strategies.
-    ///
-    /// Default: 5.0
-    pub merge_distance_thresh: f32,
 
     /// Overlap ratio threshold for merging text boxes (0.0 to 1.0)
     ///
@@ -132,7 +123,7 @@ pub struct PaddleDetConfig {
     ///
     /// Typical range: 0.3 - 0.8
     /// Default: 0.6 (merge if overlap ratio > 60%)
-    pub iou_threshold: f32,
+    pub overlap_ratio_threshold: f32,
 }
 
 impl Default for PaddleDetConfig {
@@ -149,8 +140,7 @@ impl Default for PaddleDetConfig {
             max_candidates: 1000,
             max_side_thresh: 3.0,
             text_padding: 6.0,
-            merge_distance_thresh: 5.0,
-            iou_threshold: 0.6,
+            overlap_ratio_threshold: 0.6,
         }
     }
 }

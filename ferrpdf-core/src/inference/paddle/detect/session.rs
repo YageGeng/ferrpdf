@@ -169,76 +169,131 @@ impl PaddleDetSession<PaddleDet> {
 
     /// Post-process detection results using DB (Differentiable Binarization) algorithm
     fn db_postprocess(&self, pred: &Array3<f32>, extra: &DetExtra) -> Vec<TextDetection> {
-        use image::{GrayImage, Luma};
-        use imageproc::contours::find_contours;
-        use imageproc::contrast::threshold;
-        use imageproc::distance_transform::Norm;
-        use imageproc::morphology::dilate;
-
         let config = self.model.config();
-        let mut detections = Vec::new();
 
-        // 1. Extract probability map
+        // 1. Extract and prepare probability map
+        let (pred_img, cbuf_img) = self.extract_probability_maps(pred);
+
+        // 2. Apply thresholding and morphological operations
+        let dilated_img = self.apply_threshold_and_dilation(&cbuf_img, config.det_db_box_thresh);
+
+        // 3. Find contours in the processed image
+        let contours = self.find_text_contours(&dilated_img);
+
+        // 4. Process each contour to extract text detections
+        let mut detections = Vec::new();
+        for contour in contours {
+            if let Some(detection) =
+                self.process_contour_to_detection(&contour, &pred_img, extra, config)
+            {
+                detections.push(detection);
+            }
+        }
+
+        // 5. Merge overlapping text boxes
+        self.merge_bboxes(detections)
+    }
+
+    /// Extract probability maps from model prediction
+    fn extract_probability_maps(
+        &self,
+        pred: &Array3<f32>,
+    ) -> (
+        image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
+        image::GrayImage,
+    ) {
+        use image::{GrayImage, Luma};
+
+        // Extract probability map from first channel
         let prob_map = pred.slice(ndarray::s![0, .., ..]);
         let (h, w) = prob_map.dim();
+
+        // Convert to vectors for image processing
         let pred_data: Vec<f32> = prob_map.iter().copied().collect();
         let cbuf_data: Vec<u8> = pred_data.iter().map(|&x| (x * 255.0) as u8).collect();
 
+        // Create image buffers
         let pred_img: image::ImageBuffer<Luma<f32>, Vec<f32>> =
             image::ImageBuffer::from_vec(w as u32, h as u32, pred_data).unwrap();
         let cbuf_img = GrayImage::from_vec(w as u32, h as u32, cbuf_data).unwrap();
 
-        // 2. Thresholding
+        (pred_img, cbuf_img)
+    }
+
+    /// Apply thresholding and dilation operations
+    fn apply_threshold_and_dilation(
+        &self,
+        cbuf_img: &image::GrayImage,
+        box_thresh: f32,
+    ) -> image::GrayImage {
+        use imageproc::contrast::threshold;
+        use imageproc::distance_transform::Norm;
+        use imageproc::morphology::dilate;
+
+        // Apply binary thresholding
         let threshold_img = threshold(
-            &cbuf_img,
-            (config.det_db_box_thresh * 255.0) as u8,
+            cbuf_img,
+            (box_thresh * 255.0) as u8,
             imageproc::contrast::ThresholdType::Binary,
         );
 
-        // 3. Dilation
-        let dilate_img = dilate(&threshold_img, Norm::LInf, 1);
+        // Apply dilation to connect nearby text regions
+        dilate(&threshold_img, Norm::LInf, 1)
+    }
 
-        // 4. Contour finding
-        let img_contours = find_contours(&dilate_img);
+    /// Find text contours in the processed image
+    fn find_text_contours(
+        &self,
+        dilated_img: &image::GrayImage,
+    ) -> Vec<imageproc::contours::Contour<i32>> {
+        use imageproc::contours::find_contours;
 
-        for contour in img_contours {
-            if contour.points.len() <= 2 {
-                continue;
-            }
+        find_contours(dilated_img)
+    }
 
-            // 5. Minimum area rectangle
-            let mut max_side = 0.0;
-            let min_box = self.get_mini_box(&contour.points, &mut max_side);
-            if max_side < config.max_side_thresh {
-                continue;
-            }
-
-            // 6. Calculate score
-            let score = self.get_score(&contour, &pred_img);
-            if score < config.det_db_thresh {
-                continue;
-            }
-
-            // 7. Unclip
-            let clip_box = self.unclip(&min_box, config.det_db_unclip_ratio);
-            if clip_box.is_empty() {
-                continue;
-            }
-
-            let mut max_side_clip = 0.0;
-            let clip_min_box = self.get_mini_box(&clip_box, &mut max_side_clip);
-            if max_side_clip < config.max_side_thresh + 2.0 {
-                continue;
-            }
-
-            // 8. Convert to bounding box and scale to original coordinates
-            let bbox = self.points_to_bbox(&clip_min_box, extra);
-
-            detections.push(TextDetection { bbox, proba: score });
+    /// Process a single contour to extract text detection
+    fn process_contour_to_detection(
+        &self,
+        contour: &imageproc::contours::Contour<i32>,
+        pred_img: &image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
+        extra: &DetExtra,
+        config: &<PaddleDet as Model>::Config,
+    ) -> Option<TextDetection> {
+        // Skip contours with too few points
+        if contour.points.len() <= 2 {
+            return None;
         }
 
-        // Merge text boxes into lines based on vertical and horizontal overlap
-        self.merge_bboxes(detections)
+        // Get minimum area rectangle and check size constraints
+        let mut max_side = 0.0;
+        let min_box = self.get_mini_box(&contour.points, &mut max_side);
+        if max_side < config.max_side_thresh {
+            return None;
+        }
+
+        // Calculate confidence score
+        let score = self.get_score(contour, pred_img);
+        if score < config.det_db_thresh {
+            return None;
+        }
+
+        // Apply unclip operation
+        let clip_box = self.unclip(&min_box, config.det_db_unclip_ratio);
+        if clip_box.is_empty() {
+            return None;
+        }
+
+        // Check size constraints after unclip
+        let mut max_side_clip = 0.0;
+        let clip_min_box = self.get_mini_box(&clip_box, &mut max_side_clip);
+        if max_side_clip < config.max_side_thresh + 2.0 {
+            return None;
+        }
+
+        // Convert to bounding box and scale to original coordinates
+        let bbox = self.points_to_bbox(&clip_min_box, extra);
+
+        Some(TextDetection { bbox, proba: score })
     }
 
     // Convert contour points to bounding box
@@ -247,6 +302,21 @@ impl PaddleDetSession<PaddleDet> {
             return Bbox::new(glam::Vec2::ZERO, glam::Vec2::ZERO);
         }
 
+        // Calculate bounding box from points
+        let (min_x, min_y, max_x, max_y) = self.calculate_points_bounds(points);
+
+        // Scale coordinates to original image space
+        let (min, max) = self.scale_coordinates_to_original(min_x, min_y, max_x, max_y, extra);
+
+        // Apply text padding
+        self.apply_text_padding(min, max, extra)
+    }
+
+    /// Calculate bounding box from contour points
+    fn calculate_points_bounds(
+        &self,
+        points: &[imageproc::point::Point<f32>],
+    ) -> (f32, f32, f32, f32) {
         let mut min_x = f32::MAX;
         let mut min_y = f32::MAX;
         let mut max_x = f32::MIN;
@@ -259,16 +329,32 @@ impl PaddleDetSession<PaddleDet> {
             max_y = max_y.max(point.y);
         }
 
-        // Scale from resized coordinates to original coordinates
+        (min_x, min_y, max_x, max_y)
+    }
+
+    /// Scale coordinates from resized to original image space
+    fn scale_coordinates_to_original(
+        &self,
+        min_x: f32,
+        min_y: f32,
+        max_x: f32,
+        max_y: f32,
+        extra: &DetExtra,
+    ) -> (glam::Vec2, glam::Vec2) {
         let scale_x = extra.original_shape.0 as f32 / extra.resized_shape.0 as f32;
         let scale_y = extra.original_shape.1 as f32 / extra.resized_shape.1 as f32;
 
         let min = glam::Vec2::new(min_x * scale_x, min_y * scale_y);
         let max = glam::Vec2::new(max_x * scale_x, max_y * scale_y);
 
-        // Apply text padding
+        (min, max)
+    }
+
+    /// Apply text padding to bounding box
+    fn apply_text_padding(&self, min: glam::Vec2, max: glam::Vec2, extra: &DetExtra) -> Bbox {
         let config = self.model.config();
         let padding = config.text_padding;
+
         let padded_min = glam::Vec2::new((min.x - padding).max(0.0), (min.y - padding).max(0.0));
         let padded_max = glam::Vec2::new(
             (max.x + padding).min(extra.original_shape.0 as f32),
@@ -278,8 +364,6 @@ impl PaddleDetSession<PaddleDet> {
         Bbox::new(padded_min, padded_max)
     }
 
-    // === Helper methods ===
-
     // Minimum bounding rectangle
     fn get_mini_box(
         &self,
@@ -287,15 +371,34 @@ impl PaddleDetSession<PaddleDet> {
         min_edge_size: &mut f32,
     ) -> Vec<imageproc::point::Point<f32>> {
         use imageproc::geometry::min_area_rect;
-        use std::cmp::Ordering;
 
+        // Get minimum area rectangle
         let rect = min_area_rect(points);
 
-        let mut rect_points: Vec<imageproc::point::Point<f32>> = rect
-            .iter()
-            .map(|p| imageproc::point::Point::new(p.x as f32, p.y as f32))
-            .collect();
+        // Convert to float points and calculate dimensions
+        let rect_points = self.convert_rect_to_float_points(&rect);
+        let (width, height) = self.calculate_rect_dimensions(&rect_points);
+        *min_edge_size = width.min(height);
 
+        // Sort and reorder points for consistent output
+        self.sort_and_reorder_rect_points(rect_points)
+    }
+
+    /// Convert integer rectangle points to float points
+    fn convert_rect_to_float_points(
+        &self,
+        rect: &[imageproc::point::Point<i32>],
+    ) -> Vec<imageproc::point::Point<f32>> {
+        rect.iter()
+            .map(|p| imageproc::point::Point::new(p.x as f32, p.y as f32))
+            .collect()
+    }
+
+    /// Calculate width and height of rectangle
+    fn calculate_rect_dimensions(
+        &self,
+        rect_points: &[imageproc::point::Point<f32>],
+    ) -> (f32, f32) {
         let width = ((rect_points[0].x - rect_points[1].x).powi(2)
             + (rect_points[0].y - rect_points[1].y).powi(2))
         .sqrt();
@@ -303,8 +406,17 @@ impl PaddleDetSession<PaddleDet> {
             + (rect_points[1].y - rect_points[2].y).powi(2))
         .sqrt();
 
-        *min_edge_size = width.min(height);
+        (width, height)
+    }
 
+    /// Sort and reorder rectangle points for consistent output
+    fn sort_and_reorder_rect_points(
+        &self,
+        mut rect_points: Vec<imageproc::point::Point<f32>>,
+    ) -> Vec<imageproc::point::Point<f32>> {
+        use std::cmp::Ordering;
+
+        // Sort by x-coordinate
         rect_points.sort_by(|a, b| {
             if a.x > b.x {
                 return Ordering::Greater;
@@ -315,33 +427,26 @@ impl PaddleDetSession<PaddleDet> {
             Ordering::Less
         });
 
-        let mut box_points = Vec::new();
-        let index_1;
-        let index_4;
-        if rect_points[1].y > rect_points[0].y {
-            index_1 = 0;
-            index_4 = 1;
+        // Determine indices for reordering
+        let (index_1, index_4) = if rect_points[1].y > rect_points[0].y {
+            (0, 1)
         } else {
-            index_1 = 1;
-            index_4 = 0;
-        }
+            (1, 0)
+        };
 
-        let index_2;
-        let index_3;
-        if rect_points[3].y > rect_points[2].y {
-            index_2 = 2;
-            index_3 = 3;
+        let (index_2, index_3) = if rect_points[3].y > rect_points[2].y {
+            (2, 3)
         } else {
-            index_2 = 3;
-            index_3 = 2;
-        }
+            (3, 2)
+        };
 
-        box_points.push(rect_points[index_1]);
-        box_points.push(rect_points[index_2]);
-        box_points.push(rect_points[index_3]);
-        box_points.push(rect_points[index_4]);
-
-        box_points
+        // Reorder points
+        vec![
+            rect_points[index_1],
+            rect_points[index_2],
+            rect_points[index_3],
+            rect_points[index_4],
+        ]
     }
 
     // Calculate score
@@ -350,6 +455,33 @@ impl PaddleDetSession<PaddleDet> {
         contour: &imageproc::contours::Contour<i32>,
         f_map_mat: &image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
     ) -> f32 {
+        // Get bounding box of contour
+        let (xmin, xmax, ymin, ymax) = self.get_contour_bounds(contour, f_map_mat);
+
+        // Calculate ROI dimensions
+        let roi_width = xmax - xmin + 1;
+        let roi_height = ymax - ymin + 1;
+
+        if roi_width <= 0 || roi_height <= 0 {
+            return 0.0;
+        }
+
+        // Create mask for the contour region
+        let mask = self.create_contour_mask(contour, xmin, ymin, roi_width, roi_height);
+
+        // Crop the probability map to ROI
+        let cropped_img = self.crop_probability_map(f_map_mat, xmin, ymin, roi_width, roi_height);
+
+        // Calculate mean score within the contour
+        self.calculate_mean_score(&cropped_img, &mask)
+    }
+
+    /// Get bounding box of contour with bounds checking
+    fn get_contour_bounds(
+        &self,
+        contour: &imageproc::contours::Contour<i32>,
+        f_map_mat: &image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
+    ) -> (i32, i32, i32, i32) {
         // Initialize boundary values
         let mut xmin = i32::MAX;
         let mut xmax = i32::MIN;
@@ -358,65 +490,83 @@ impl PaddleDetSession<PaddleDet> {
 
         // Find bounding box of contour
         for point in contour.points.iter() {
-            let x = point.x;
-            let y = point.y;
-
-            if x < xmin {
-                xmin = x;
-            }
-            if x > xmax {
-                xmax = x;
-            }
-            if y < ymin {
-                ymin = y;
-            }
-            if y > ymax {
-                ymax = y;
-            }
+            xmin = xmin.min(point.x);
+            xmax = xmax.max(point.x);
+            ymin = ymin.min(point.y);
+            ymax = ymax.max(point.y);
         }
 
         let width = f_map_mat.width() as i32;
         let height = f_map_mat.height() as i32;
 
+        // Clamp to image boundaries
         let xmin = xmin.max(0).min(width - 1);
         let xmax = xmax.max(0).min(width - 1);
         let ymin = ymin.max(0).min(height - 1);
         let ymax = ymax.max(0).min(height - 1);
 
-        let roi_width = xmax - xmin + 1;
-        let roi_height = ymax - ymin + 1;
+        (xmin, xmax, ymin, ymax)
+    }
 
-        if roi_width <= 0 || roi_height <= 0 {
-            return 0.0;
-        }
-
+    /// Create binary mask for contour region
+    fn create_contour_mask(
+        &self,
+        contour: &imageproc::contours::Contour<i32>,
+        xmin: i32,
+        ymin: i32,
+        roi_width: i32,
+        roi_height: i32,
+    ) -> image::GrayImage {
         let mut mask = image::GrayImage::new(roi_width as u32, roi_height as u32);
 
-        let mut pts = Vec::<imageproc::point::Point<i32>>::new();
-        for point in contour.points.iter() {
-            pts.push(imageproc::point::Point::new(point.x - xmin, point.y - ymin));
-        }
+        // Translate contour points to ROI coordinates
+        let pts: Vec<imageproc::point::Point<i32>> = contour
+            .points
+            .iter()
+            .map(|p| imageproc::point::Point::new(p.x - xmin, p.y - ymin))
+            .collect();
 
+        // Draw polygon mask
         imageproc::drawing::draw_polygon_mut(&mut mask, pts.as_slice(), image::Luma([255]));
 
-        let cropped_img = image::imageops::crop_imm(
+        mask
+    }
+
+    /// Crop probability map to ROI region
+    fn crop_probability_map(
+        &self,
+        f_map_mat: &image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
+        xmin: i32,
+        ymin: i32,
+        roi_width: i32,
+        roi_height: i32,
+    ) -> image::ImageBuffer<image::Luma<f32>, Vec<f32>> {
+        image::imageops::crop_imm(
             f_map_mat,
             xmin as u32,
             ymin as u32,
             roi_width as u32,
             roi_height as u32,
         )
-        .to_image();
+        .to_image()
+    }
 
-        // Calculate mean
+    /// Calculate mean score within the contour mask
+    fn calculate_mean_score(
+        &self,
+        cropped_img: &image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
+        mask: &image::GrayImage,
+    ) -> f32 {
         let mut sum = 0.0;
         let mut count = 0;
+
         for (x, y, pixel) in cropped_img.enumerate_pixels() {
             if mask.get_pixel(x, y)[0] > 0 {
                 sum += pixel[0];
                 count += 1;
             }
         }
+
         if count == 0 { 0.0 } else { sum / count as f32 }
     }
 
@@ -433,50 +583,261 @@ impl PaddleDetSession<PaddleDet> {
             .collect()
     }
 
-    /// Merge text boxes based on IoU threshold
+    /// Merge text boxes based on IoU threshold using the most efficient strategy.
+    /// - For n <= 2000, use sweep line (O(n log n)), which is fast and memory efficient.
+    /// - For n > 2000, use grid-based merging (O(n)~O(n log n)), suitable for massive bbox sets.
+    ///   You can easily switch or extend this logic as needed.
     fn merge_bboxes(&self, detections: Vec<TextDetection>) -> Vec<TextDetection> {
+        let n = detections.len();
+        let config = self.model.config();
+        let overlap_threshold = config.overlap_ratio_threshold;
+
+        // Auto-select the most efficient algorithm
+        if n > 2000 {
+            // For very large n, use grid-based merging
+            self.merge_bboxes_grid(detections, overlap_threshold)
+        } else {
+            // Default: sweep line (O(n log n)), best for most cases
+            self.merge_bboxes_sweep_line(detections, overlap_threshold)
+        }
+    }
+
+    /// Efficient bbox merging using sweep line algorithm - O(n log n)
+    fn merge_bboxes_sweep_line(
+        &self,
+        mut detections: Vec<TextDetection>,
+        overlap_threshold: f32,
+    ) -> Vec<TextDetection> {
+        if detections.len() <= 1 {
+            return detections;
+        }
+
+        // Sort detections by x-coordinate for sweep line
+        detections.sort_by(|a, b| {
+            a.bbox
+                .min
+                .x
+                .partial_cmp(&b.bbox.min.x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let merged: Vec<TextDetection> = Vec::new();
+        let mut active_bboxes: Vec<TextDetection> = Vec::new();
+
+        for detection in detections {
+            let current_x = detection.bbox.min.x;
+
+            // Remove inactive bboxes (those that end before current x)
+            active_bboxes.retain(|active| active.bbox.max.x >= current_x);
+
+            // Check for overlaps with active bboxes
+            let mut merged_bbox = detection;
+            let mut merged_indices: Vec<usize> = Vec::new();
+
+            for (i, active) in active_bboxes.iter().enumerate() {
+                let overlap_ratio = merged_bbox.bbox.overlap_ratio(&active.bbox);
+                if overlap_ratio >= overlap_threshold {
+                    // Merge with this active bbox
+                    merged_bbox.bbox = merged_bbox.bbox.union(&active.bbox);
+                    merged_bbox.proba = merged_bbox.proba.max(active.proba);
+                    merged_indices.push(i);
+                }
+            }
+
+            // Remove merged active bboxes (in reverse order to maintain indices)
+            for &index in merged_indices.iter().rev() {
+                active_bboxes.remove(index);
+            }
+
+            // Add current (possibly merged) bbox to active list
+            active_bboxes.push(merged_bbox);
+        }
+
+        // All remaining active bboxes are final results
+        active_bboxes
+    }
+
+    /// Alternative: Grid-based merging algorithm - O(n) average case
+    fn merge_bboxes_grid(
+        &self,
+        detections: Vec<TextDetection>,
+        overlap_threshold: f32,
+    ) -> Vec<TextDetection> {
         if detections.is_empty() {
             return detections;
         }
 
-        let config = self.model.config();
+        // Calculate grid size based on typical bbox size
+        let grid_size = self.calculate_optimal_grid_size(&detections);
+
+        // Create spatial grid
+        let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
+            std::collections::HashMap::new();
+
+        // Assign detections to grid cells
+        for (idx, detection) in detections.iter().enumerate() {
+            let cells = self.get_bbox_grid_cells(&detection.bbox, grid_size);
+            for cell in cells {
+                grid.entry(cell).or_default();
+                grid.get_mut(&cell).unwrap().push(idx);
+            }
+        }
+
+        // Merge detections within each grid cell
         let mut merged = Vec::new();
         let mut used = vec![false; detections.len()];
 
-        for (i, det) in detections.iter().enumerate() {
-            if used[i] {
+        for cell_detections in grid.values() {
+            if cell_detections.len() <= 1 {
                 continue;
             }
 
-            let mut current_bbox = det.bbox;
-            let mut max_proba = det.proba;
-            used[i] = true;
-
-            // Try to merge with other text boxes
-            for (j, other) in detections.iter().enumerate().skip(i + 1) {
-                if used[j] {
+            // Merge detections in this cell
+            for &idx in cell_detections {
+                if used[idx] {
                     continue;
                 }
 
-                let overlap_ratio = current_bbox.overlap_ratio(&other.bbox);
+                let (merged_bbox, max_proba) = self.merge_detections_in_cell(
+                    &detections,
+                    idx,
+                    cell_detections,
+                    &mut used,
+                    overlap_threshold,
+                );
 
-                // Check if overlap ratio meets threshold
-                if overlap_ratio >= config.iou_threshold {
-                    // Merge into current bbox
-                    current_bbox = current_bbox.union(&other.bbox);
-                    max_proba = max_proba.max(other.proba);
-                    used[j] = true;
-                }
+                merged.push(TextDetection {
+                    bbox: merged_bbox,
+                    proba: max_proba,
+                });
             }
+        }
 
-            // Add merged bbox to results
-            merged.push(TextDetection {
-                bbox: current_bbox,
-                proba: max_proba,
-            });
+        // Add unmerged detections
+        for (idx, detection) in detections.iter().enumerate() {
+            if !used[idx] {
+                merged.push(detection.clone());
+            }
         }
 
         merged
+    }
+
+    /// Calculate optimal grid size based on bbox statistics
+    fn calculate_optimal_grid_size(&self, detections: &[TextDetection]) -> f32 {
+        if detections.is_empty() {
+            return 50.0; // Default grid size
+        }
+
+        // Calculate average bbox size
+        let total_width: f32 = detections.iter().map(|d| d.bbox.max.x - d.bbox.min.x).sum();
+        let total_height: f32 = detections.iter().map(|d| d.bbox.max.y - d.bbox.min.y).sum();
+        let avg_size = (total_width + total_height) / (2.0 * detections.len() as f32);
+
+        // Grid size should be 2-3 times the average bbox size
+        (avg_size * 2.5).clamp(20.0, 100.0)
+    }
+
+    /// Get grid cells that a bbox overlaps with
+    fn get_bbox_grid_cells(&self, bbox: &Bbox, grid_size: f32) -> Vec<(i32, i32)> {
+        let min_x = (bbox.min.x / grid_size).floor() as i32;
+        let max_x = (bbox.max.x / grid_size).floor() as i32;
+        let min_y = (bbox.min.y / grid_size).floor() as i32;
+        let max_y = (bbox.max.y / grid_size).floor() as i32;
+
+        let mut cells = Vec::new();
+        for x in min_x..=max_x {
+            for y in min_y..=max_y {
+                cells.push((x, y));
+            }
+        }
+        cells
+    }
+
+    /// Merge detections within a grid cell
+    fn merge_detections_in_cell(
+        &self,
+        detections: &[TextDetection],
+        start_idx: usize,
+        cell_indices: &[usize],
+        used: &mut [bool],
+        overlap_threshold: f32,
+    ) -> (Bbox, f32) {
+        let mut current_bbox = detections[start_idx].bbox;
+        let mut max_proba = detections[start_idx].proba;
+        used[start_idx] = true;
+
+        for &idx in cell_indices {
+            if used[idx] || idx == start_idx {
+                continue;
+            }
+
+            let overlap_ratio = current_bbox.overlap_ratio(&detections[idx].bbox);
+            if overlap_ratio >= overlap_threshold {
+                current_bbox = current_bbox.union(&detections[idx].bbox);
+                max_proba = max_proba.max(detections[idx].proba);
+                used[idx] = true;
+            }
+        }
+
+        (current_bbox, max_proba)
+    }
+
+    /// Alternative: Hierarchical clustering approach - O(n log n)
+    fn merge_bboxes_hierarchical(
+        &self,
+        detections: Vec<TextDetection>,
+        overlap_threshold: f32,
+    ) -> Vec<TextDetection> {
+        if detections.is_empty() {
+            return detections;
+        }
+
+        let n = detections.len();
+        let mut cluster_bboxes: Vec<TextDetection> = detections.clone();
+        let mut cluster_indices: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+
+        loop {
+            let mut best_merge = None;
+            let mut best_overlap = 0.0;
+
+            // Find best pair to merge
+            for i in 0..cluster_bboxes.len() {
+                for j in (i + 1)..cluster_bboxes.len() {
+                    let overlap = cluster_bboxes[i]
+                        .bbox
+                        .overlap_ratio(&cluster_bboxes[j].bbox);
+                    if overlap >= overlap_threshold && overlap > best_overlap {
+                        best_overlap = overlap;
+                        best_merge = Some((i, j));
+                    }
+                }
+            }
+
+            if let Some((i, j)) = best_merge {
+                // Merge clusters i and j
+                let merged_bbox = cluster_bboxes[i].bbox.union(&cluster_bboxes[j].bbox);
+                let merged_proba = cluster_bboxes[i].proba.max(cluster_bboxes[j].proba);
+
+                // Update cluster i with merged bbox
+                cluster_bboxes[i] = TextDetection {
+                    bbox: merged_bbox,
+                    proba: merged_proba,
+                };
+
+                // Move all elements from cluster j to cluster i
+                let j_indices = std::mem::take(&mut cluster_indices[j]);
+                cluster_indices[i].extend(j_indices);
+
+                // Remove cluster j
+                cluster_bboxes.remove(j);
+                cluster_indices.remove(j);
+            } else {
+                break; // No more merges possible
+            }
+        }
+
+        cluster_bboxes
     }
 
     pub fn draw<P: AsRef<Path>>(
@@ -846,7 +1207,7 @@ mod tests {
 
         // Test custom configuration
         let config = PaddleDetConfig {
-            iou_threshold: 0.7, // 70% IoU threshold
+            overlap_ratio_threshold: 0.7, // 70% IoU threshold
             ..PaddleDetConfig::default()
         };
 
@@ -854,7 +1215,7 @@ mod tests {
         assert_eq!(config.text_padding, 6.0);
         assert_eq!(config.det_db_thresh, 0.3);
         assert_eq!(config.det_db_box_thresh, 0.6);
-        assert_eq!(config.iou_threshold, 0.7);
+        assert_eq!(config.overlap_ratio_threshold, 0.7);
     }
 
     #[test]
@@ -919,7 +1280,7 @@ mod tests {
             .with_optimization_level(GraphOptimizationLevel::Level1)?;
 
         let config = PaddleDetConfig {
-            iou_threshold: 0.3, // Lower threshold to ensure overlapping detection
+            overlap_ratio_threshold: 0.3, // Lower threshold to ensure overlapping detection
             ..PaddleDetConfig::default()
         };
         let model = PaddleDet::with_config(config);
