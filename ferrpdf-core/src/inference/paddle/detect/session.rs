@@ -1,3 +1,4 @@
+use derive_builder::Builder;
 use image::Rgb;
 use image::{DynamicImage, GenericImageView, imageops::FilterType};
 use imageproc::{drawing::draw_hollow_rect_mut, rect::Rect};
@@ -31,7 +32,9 @@ pub struct TextDetection {
 }
 
 /// Extra parameters for text detection
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Builder)]
+#[builder(setter(into))]
+#[derive(Default)]
 pub struct DetExtra {
     /// Original image dimensions
     pub original_shape: (u32, u32),

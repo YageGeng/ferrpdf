@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use ab_glyph::{FontRef, PxScale};
+use derive_builder::Builder;
 use glam::Vec2;
 use image::{DynamicImage, GenericImageView, Rgb, imageops::FilterType};
 use imageproc::{
@@ -31,7 +32,8 @@ pub struct YoloSession<M: Model> {
 }
 
 /// Document metadata
-#[derive(Clone)]
+#[derive(Clone, Copy, Builder)]
+#[builder(setter(into))]
 pub struct DocMeta {
     pub pdf_size: Vec2,
     pub image_size: Vec2,

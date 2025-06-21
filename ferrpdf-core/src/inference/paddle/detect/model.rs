@@ -72,16 +72,6 @@ pub struct PaddleDetConfig {
     /// Default: 0.6
     pub det_db_box_thresh: f32,
 
-    /// Unclip ratio for text region expansion
-    ///
-    /// After detecting text contours, this ratio is used to expand the detected
-    /// regions to better encompass the full text. Higher values result in larger
-    /// bounding boxes around text.
-    ///
-    /// Typical range: 1.0 - 2.0
-    /// Default: 1.5
-    pub det_db_unclip_ratio: f32,
-
     /// Maximum number of text candidates to process
     ///
     /// Limits the number of potential text regions that will be processed during
@@ -155,7 +145,6 @@ impl Default for PaddleDetConfig {
             background_fill_value: 0.5,
             det_db_thresh: 0.3,
             det_db_box_thresh: 0.6,
-            det_db_unclip_ratio: 1.5,
             max_candidates: 1000,
             max_side_thresh: 3.0,
             text_padding: 6.0,

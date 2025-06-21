@@ -39,4 +39,14 @@ pub enum FerrpdfError {
         source: std::io::Error,
         path: String,
     },
+    #[snafu(display("Environment `{}` Not Found, error {}", name, source))]
+    EnvNotFound {
+        source: std::env::VarError,
+        name: String,
+    },
+    #[snafu(display("Pdfium `{}` error {}", stage, source))]
+    Pdfium {
+        source: pdfium_render::prelude::PdfiumError,
+        stage: String,
+    },
 }

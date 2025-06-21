@@ -179,7 +179,7 @@ impl Analyzer {
             page,
         };
 
-        let layouts = self.session.run(image, doc_meta.clone())?;
+        let layouts = self.session.run(image, doc_meta)?;
 
         info!(
             "Layout analysis completed. Found {} elements",

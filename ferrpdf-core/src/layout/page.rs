@@ -1,5 +1,6 @@
-use std::alloc::Layout;
+use crate::layout::element::Layout;
 
+#[derive(Debug, Clone)]
 pub struct Page {
     pub width: f32,
     pub height: f32,

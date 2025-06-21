@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::analysis::{bbox::Bbox, labels::Label};
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Debug)]
 pub struct Layout {
     pub bbox: Bbox,
     pub label: Label,
