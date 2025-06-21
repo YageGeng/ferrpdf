@@ -155,16 +155,21 @@ impl OnnxSession<PaddleRec> for PaddleRecSession<PaddleRec> {
             src_resize.width() as _,
         ]);
 
+        // Pre-calculate normalization constants for performance
+        // Original: (r/255.0 - 0.5) / 0.5 = r/127.5 - 1.0
+        const NORMALIZATION_SCALE: f32 = 1.0 / 127.5; // 1.0 / 127.5 = 0.007843137
+        const NORMALIZATION_OFFSET: f32 = -1.0;
+
         // Fill tensor with normalized pixel values
         for (x, y, pixel) in src_resize.enumerate_pixels() {
             let x = x as usize;
             let y = y as usize;
             let [r, g, b] = pixel.0;
 
-            // Normalize to [0, 1] range and then to [-1, 1] range (common for OCR models)
-            input_tensor[[0, 0, y, x]] = (r as f32 / 255.0 - 0.5) / 0.5;
-            input_tensor[[0, 1, y, x]] = (g as f32 / 255.0 - 0.5) / 0.5;
-            input_tensor[[0, 2, y, x]] = (b as f32 / 255.0 - 0.5) / 0.5;
+            // Optimized normalization: r * NORMALIZATION_SCALE + NORMALIZATION_OFFSET
+            input_tensor[[0, 0, y, x]] = r as f32 * NORMALIZATION_SCALE + NORMALIZATION_OFFSET;
+            input_tensor[[0, 1, y, x]] = g as f32 * NORMALIZATION_SCALE + NORMALIZATION_OFFSET;
+            input_tensor[[0, 2, y, x]] = b as f32 * NORMALIZATION_SCALE + NORMALIZATION_OFFSET;
         }
 
         Ok(input_tensor)
