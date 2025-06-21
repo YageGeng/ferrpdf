@@ -597,13 +597,14 @@ impl PaddleDetSession<PaddleDet> {
             // For very large n, use grid-based merging
             self.merge_bboxes_grid(detections, overlap_threshold)
         } else {
-            // Default: sweep line (O(n log n)), best for most cases
-            self.merge_bboxes_sweep_line(detections, overlap_threshold)
+            // Default: improved sweep line with better overlap detection
+            self.merge_bboxes_improved(detections, overlap_threshold)
         }
     }
 
-    /// Efficient bbox merging using sweep line algorithm - O(n log n)
-    fn merge_bboxes_sweep_line(
+    /// Improved bbox merging that can handle multiple bboxes merging into one large bbox
+    /// Uses a more robust approach that considers both horizontal and vertical overlaps
+    fn merge_bboxes_improved(
         &self,
         mut detections: Vec<TextDetection>,
         overlap_threshold: f32,
@@ -612,49 +613,79 @@ impl PaddleDetSession<PaddleDet> {
             return detections;
         }
 
-        // Sort detections by x-coordinate for sweep line
+        // Sort by area (larger bboxes first) to prioritize merging into larger ones
         detections.sort_by(|a, b| {
-            a.bbox
-                .min
-                .x
-                .partial_cmp(&b.bbox.min.x)
+            let area_a = (a.bbox.max.x - a.bbox.min.x) * (a.bbox.max.y - a.bbox.min.y);
+            let area_b = (b.bbox.max.x - b.bbox.min.x) * (b.bbox.max.y - b.bbox.min.y);
+            area_b
+                .partial_cmp(&area_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let merged: Vec<TextDetection> = Vec::new();
-        let mut active_bboxes: Vec<TextDetection> = Vec::new();
+        let mut merged = Vec::new();
+        let mut used = vec![false; detections.len()];
 
-        for detection in detections {
-            let current_x = detection.bbox.min.x;
-
-            // Remove inactive bboxes (those that end before current x)
-            active_bboxes.retain(|active| active.bbox.max.x >= current_x);
-
-            // Check for overlaps with active bboxes
-            let mut merged_bbox = detection;
-            let mut merged_indices: Vec<usize> = Vec::new();
-
-            for (i, active) in active_bboxes.iter().enumerate() {
-                let overlap_ratio = merged_bbox.bbox.overlap_ratio(&active.bbox);
-                if overlap_ratio >= overlap_threshold {
-                    // Merge with this active bbox
-                    merged_bbox.bbox = merged_bbox.bbox.union(&active.bbox);
-                    merged_bbox.proba = merged_bbox.proba.max(active.proba);
-                    merged_indices.push(i);
-                }
+        // Process each detection starting from the largest
+        for (i, detection) in detections.iter().enumerate() {
+            if used[i] {
+                continue;
             }
 
-            // Remove merged active bboxes (in reverse order to maintain indices)
-            for &index in merged_indices.iter().rev() {
-                active_bboxes.remove(index);
-            }
+            // Try to merge current bbox with all other unused bboxes
+            let (merged_bbox, max_proba) =
+                self.merge_with_all_overlapping(&detections, i, &mut used, overlap_threshold);
 
-            // Add current (possibly merged) bbox to active list
-            active_bboxes.push(merged_bbox);
+            merged.push(TextDetection {
+                bbox: merged_bbox,
+                proba: max_proba,
+            });
         }
 
-        // All remaining active bboxes are final results
-        active_bboxes
+        merged
+    }
+
+    /// Merge a bbox with all overlapping bboxes (not just active ones)
+    fn merge_with_all_overlapping(
+        &self,
+        detections: &[TextDetection],
+        start_idx: usize,
+        used: &mut [bool],
+        overlap_threshold: f32,
+    ) -> (Bbox, f32) {
+        let mut current_bbox = detections[start_idx].bbox;
+        let mut max_proba = detections[start_idx].proba;
+        used[start_idx] = true;
+
+        // Keep merging until no more overlaps are found
+        let mut changed = true;
+        while changed {
+            changed = false;
+
+            // Check all unused detections for overlaps
+            for (j, other) in detections.iter().enumerate() {
+                if used[j] {
+                    continue;
+                }
+
+                let overlap_ratio = current_bbox.overlap_ratio(&other.bbox);
+
+                // Also check if the other bbox is mostly contained within current bbox
+                let other_area =
+                    (other.bbox.max.x - other.bbox.min.x) * (other.bbox.max.y - other.bbox.min.y);
+                let intersection_area = current_bbox.intersection(&other.bbox);
+                let containment_ratio = intersection_area / other_area;
+
+                if overlap_ratio >= overlap_threshold || containment_ratio >= 0.5 {
+                    // Merge with this bbox
+                    current_bbox = current_bbox.union(&other.bbox);
+                    max_proba = max_proba.max(other.proba);
+                    used[j] = true;
+                    changed = true;
+                }
+            }
+        }
+
+        (current_bbox, max_proba)
     }
 
     /// Alternative: Grid-based merging algorithm - O(n) average case

@@ -210,59 +210,85 @@ impl YoloSession<Yolov12> {
             return;
         }
 
-        // Sort layouts by confidence score in descending order
-        // Higher confidence detections will be processed first and have priority
-        raw_layouts.sort_by(|layout1, layout2| {
-            layout2
-                .proba
-                .partial_cmp(&layout1.proba)
+        // Sort layouts by area (larger bboxes first) to prioritize merging into larger ones
+        raw_layouts.sort_by(|a, b| {
+            let area_a = (a.bbox.max.x - a.bbox.min.x) * (a.bbox.max.y - a.bbox.min.y);
+            let area_b = (b.bbox.max.x - b.bbox.min.x) * (b.bbox.max.y - b.bbox.min.y);
+            area_b
+                .partial_cmp(&area_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let mut keep_flags = vec![true; raw_layouts.len()];
+        let mut merged = Vec::new();
+        let mut used = vec![false; raw_layouts.len()];
 
-        // Process each layout and check for merges with previous kept layouts
-        for current_index in 0..raw_layouts.len() {
-            if !keep_flags[current_index] {
-                continue; // Already marked for removal
+        // Process each layout starting from the largest
+        for (i, layout) in raw_layouts.iter().enumerate() {
+            if used[i] {
+                continue;
             }
 
-            let current_bbox = raw_layouts[current_index].bbox;
+            // Try to merge current bbox with all other unused bboxes
+            let (merged_bbox, max_proba) = self.merge_layout_with_all_overlapping(
+                raw_layouts,
+                i,
+                &mut used,
+                self.model.config().iou_threshold,
+            );
 
-            // Check against all previously processed layouts that are still kept
-            for kept_index in 0..current_index {
-                if !keep_flags[kept_index] {
-                    continue; // Skip layouts that were already merged/removed
+            // Create merged layout
+            let mut merged_layout = layout.clone();
+            merged_layout.bbox = merged_bbox;
+            merged_layout.proba = max_proba;
+            merged.push(merged_layout);
+        }
+
+        // Replace original layouts with merged ones
+        *raw_layouts = merged;
+    }
+
+    /// Merge a layout with all overlapping layouts (not just active ones)
+    fn merge_layout_with_all_overlapping(
+        &self,
+        layouts: &[Layout],
+        start_idx: usize,
+        used: &mut [bool],
+        overlap_threshold: f32,
+    ) -> (Bbox, f32) {
+        let mut current_bbox = layouts[start_idx].bbox;
+        let mut max_proba = layouts[start_idx].proba;
+        used[start_idx] = true;
+
+        // Keep merging until no more overlaps are found
+        let mut changed = true;
+        while changed {
+            changed = false;
+
+            // Check all unused layouts for overlaps
+            for (j, other) in layouts.iter().enumerate() {
+                if used[j] {
+                    continue;
                 }
 
-                let overlap_ratio = current_bbox.overlap_ratio(&raw_layouts[kept_index].bbox);
+                let overlap_ratio = current_bbox.overlap_ratio(&other.bbox);
 
-                // If overlap ratio is high, merge current into kept detection
-                // Since array is sorted by confidence, kept detections have higher confidence
-                if overlap_ratio > self.model.config().iou_threshold {
-                    // Merge the bbox by taking the union - update the kept layout's bbox
-                    raw_layouts[kept_index].bbox =
-                        raw_layouts[kept_index].bbox.union(&current_bbox);
-                    // Mark current layout for removal
-                    keep_flags[current_index] = false;
-                    break;
+                // Also check if the other bbox is mostly contained within current bbox
+                let other_area =
+                    (other.bbox.max.x - other.bbox.min.x) * (other.bbox.max.y - other.bbox.min.y);
+                let intersection_area = current_bbox.intersection(&other.bbox);
+                let containment_ratio = intersection_area / other_area;
+
+                if overlap_ratio >= overlap_threshold || containment_ratio >= 0.5 {
+                    // Merge with this layout
+                    current_bbox = current_bbox.union(&other.bbox);
+                    max_proba = max_proba.max(other.proba);
+                    used[j] = true;
+                    changed = true;
                 }
             }
         }
 
-        // Remove layouts marked for deletion by swapping with kept ones
-        let mut write_index = 0;
-        for (read_index, keep_flag) in keep_flags.iter().enumerate().take(raw_layouts.len()) {
-            if *keep_flag {
-                if write_index != read_index {
-                    raw_layouts.swap(write_index, read_index);
-                }
-                write_index += 1;
-            }
-        }
-
-        // Truncate to remove the elements that were swapped to the end
-        raw_layouts.truncate(write_index);
+        (current_bbox, max_proba)
     }
 
     pub fn draw<P: AsRef<Path>>(
