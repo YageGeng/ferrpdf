@@ -1,4 +1,3 @@
-use ab_glyph::PxScale;
 use image::Rgb;
 use image::{DynamicImage, GenericImageView, imageops::FilterType};
 use imageproc::{drawing::draw_hollow_rect_mut, rect::Rect};
@@ -8,6 +7,7 @@ use ort::value::TensorRef;
 use snafu::{OptionExt, ResultExt};
 use std::path::Path;
 
+use crate::consts::*;
 use crate::{
     analysis::bbox::Bbox,
     error::*,
@@ -278,7 +278,7 @@ impl PaddleDetSession<PaddleDet> {
         }
 
         // Apply unclip operation
-        let clip_box = self.unclip(&min_box, config.det_db_unclip_ratio);
+        let clip_box = self.unclip(&min_box);
         if clip_box.is_empty() {
             return None;
         }
@@ -584,7 +584,6 @@ impl PaddleDetSession<PaddleDet> {
     fn unclip(
         &self,
         box_points: &[imageproc::point::Point<f32>],
-        unclip_ratio: f32,
     ) -> Vec<imageproc::point::Point<i32>> {
         // Simplified implementation - return original points as integers
         box_points
@@ -636,7 +635,7 @@ impl PaddleDetSession<PaddleDet> {
         let mut used = vec![false; detections.len()];
 
         // Process each detection starting from the largest
-        for (i, detection) in detections.iter().enumerate() {
+        for i in 0..detections.len() {
             if used[i] {
                 continue;
             }
@@ -823,63 +822,6 @@ impl PaddleDetSession<PaddleDet> {
         (current_bbox, max_proba)
     }
 
-    /// Alternative: Hierarchical clustering approach - O(n log n)
-    fn merge_bboxes_hierarchical(
-        &self,
-        detections: Vec<TextDetection>,
-        overlap_threshold: f32,
-    ) -> Vec<TextDetection> {
-        if detections.is_empty() {
-            return detections;
-        }
-
-        let n = detections.len();
-        let mut cluster_bboxes: Vec<TextDetection> = detections.clone();
-        let mut cluster_indices: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
-
-        loop {
-            let mut best_merge = None;
-            let mut best_overlap = 0.0;
-
-            // Find best pair to merge
-            for i in 0..cluster_bboxes.len() {
-                for j in (i + 1)..cluster_bboxes.len() {
-                    let overlap = cluster_bboxes[i]
-                        .bbox
-                        .overlap_ratio(&cluster_bboxes[j].bbox);
-                    if overlap >= overlap_threshold && overlap > best_overlap {
-                        best_overlap = overlap;
-                        best_merge = Some((i, j));
-                    }
-                }
-            }
-
-            if let Some((i, j)) = best_merge {
-                // Merge clusters i and j
-                let merged_bbox = cluster_bboxes[i].bbox.union(&cluster_bboxes[j].bbox);
-                let merged_proba = cluster_bboxes[i].proba.max(cluster_bboxes[j].proba);
-
-                // Update cluster i with merged bbox
-                cluster_bboxes[i] = TextDetection {
-                    bbox: merged_bbox,
-                    proba: merged_proba,
-                };
-
-                // Move all elements from cluster j to cluster i
-                let j_indices = std::mem::take(&mut cluster_indices[j]);
-                cluster_indices[i].extend(j_indices);
-
-                // Remove cluster j
-                cluster_bboxes.remove(j);
-                cluster_indices.remove(j);
-            } else {
-                break; // No more merges possible
-            }
-        }
-
-        cluster_bboxes
-    }
-
     pub fn draw<P: AsRef<Path>>(
         &self,
         output: P,
@@ -888,10 +830,7 @@ impl PaddleDetSession<PaddleDet> {
     ) -> Result<(), FerrpdfError> {
         let mut output_img = image.to_rgb8();
 
-        // Define font scale (size)
-        let font_scale = PxScale::from(16.0);
-
-        for (idx, detection) in detections.iter().enumerate() {
+        for detection in detections.iter() {
             let bbox = detection.bbox;
             let x = bbox.min.x as i32;
             let y = bbox.min.y as i32;
@@ -982,21 +921,16 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
         // Fill with background value
         input_tensor.fill(config.background_fill_value);
 
-        // Pre-calculate normalization constants for performance
-        // Original: (r/255.0 - 0.5) / 0.5 = r/127.5 - 1.0
-        const NORMALIZATION_SCALE: f32 = 1.0 / 127.5; // 1.0 / 127.5 = 0.007843137
-        const NORMALIZATION_OFFSET: f32 = -1.0;
-
         // Copy resized image to tensor
         for (x, y, pixel) in resized_img.enumerate_pixels() {
             let x = x as usize;
             let y = y as usize;
             let [r, g, b] = pixel.0;
 
-            // Optimized normalization: r * NORMALIZATION_SCALE + NORMALIZATION_OFFSET
-            input_tensor[[0, 0, y, x]] = r as f32 * NORMALIZATION_SCALE + NORMALIZATION_OFFSET;
-            input_tensor[[0, 1, y, x]] = g as f32 * NORMALIZATION_SCALE + NORMALIZATION_OFFSET;
-            input_tensor[[0, 2, y, x]] = b as f32 * NORMALIZATION_SCALE + NORMALIZATION_OFFSET;
+            // Optimized normalization: r * NORMALIZATION_SCALE -1.0
+            input_tensor[[0, 0, y, x]] = r as f32 * NORMALIZATION_SCALE - 1.0;
+            input_tensor[[0, 1, y, x]] = g as f32 * NORMALIZATION_SCALE - 1.0;
+            input_tensor[[0, 2, y, x]] = b as f32 * NORMALIZATION_SCALE - 1.0;
         }
 
         Ok(input_tensor)
@@ -1036,7 +970,7 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
             })?;
 
         // Convert to owned array with proper shape
-        let shape = tensor.shape();
+        let _shape = tensor.shape();
 
         // Remove batch dimension if present and convert to 3D
         let slice_3d = tensor.slice(ndarray::s![0, .., .., ..]);
@@ -1069,7 +1003,7 @@ mod tests {
             .with_optimization_level(GraphOptimizationLevel::Level1)?;
 
         let model = PaddleDet::new();
-        let session = PaddleDetSession::new(session_builder, model)?;
+        assert!(PaddleDetSession::new(session_builder, model).is_ok());
 
         println!("PaddleDet session initialized successfully");
         Ok(())

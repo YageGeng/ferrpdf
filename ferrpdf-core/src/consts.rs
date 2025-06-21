@@ -52,4 +52,8 @@ pub const PROBA_THRESHOLD: f32 = 0.2;
 /// This value is chosen to represent a neutral gray background.
 pub const BACKGROUND_FILL_VALUE: f32 = 144.0 / 255.0;
 
+// Pre-calculate normalization constants for performance
+// Original: (r/255.0 - 0.5) / 0.5 = r/127.5 - 1.0
+pub const NORMALIZATION_SCALE: f32 = 1.0 / 127.5;
+
 pub const FONT: &[u8] = include_bytes!("../../fonts/DejaVuSans.ttf");
