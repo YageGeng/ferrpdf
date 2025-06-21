@@ -2,6 +2,7 @@ use image::Rgb;
 use image::{DynamicImage, GenericImageView, imageops::FilterType};
 use imageproc::{drawing::draw_hollow_rect_mut, rect::Rect};
 use ndarray::prelude::*;
+use ort::session::RunOptions;
 use ort::session::{Session, builder::SessionBuilder};
 use ort::value::TensorRef;
 use snafu::{OptionExt, ResultExt};
@@ -959,6 +960,47 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
                 input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "detec-tinput"})?
             ])
             .context(InferenceSnafu {})?;
+
+        // Extract the output tensor and convert to ndarray
+        let tensor = output
+            .get(output_name)
+            .context(NotFoundOutputSnafu { output_name })?
+            .try_extract_array::<f32>()
+            .context(TensorSnafu {
+                stage: "detect-extract",
+            })?;
+
+        // Convert to owned array with proper shape
+        let _shape = tensor.shape();
+
+        // Remove batch dimension if present and convert to 3D
+        let slice_3d = tensor.slice(ndarray::s![0, .., .., ..]);
+        let output_array = Array3::from_shape_vec(
+            (
+                slice_3d.shape()[0],
+                slice_3d.shape()[1],
+                slice_3d.shape()[2],
+            ),
+            slice_3d.iter().cloned().collect(),
+        )
+        .context(ShapeSnafu { stage: "detect" })?;
+        Ok(output_array)
+    }
+
+    async fn infer_async(
+        &mut self,
+        input: <PaddleDet as Model>::Input,
+        input_name: &str,
+        output_name: &str,
+        options: &RunOptions,
+    ) -> Result<<PaddleDet as Model>::Output, FerrpdfError> {
+        // Run inference
+        let output = self
+        .session
+        .run_async(ort::inputs![
+            input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "detect-input"})?
+        ], options)
+        .context(InferenceSnafu {})?.await.context(InferenceSnafu{})?;
 
         // Extract the output tensor and convert to ndarray
         let tensor = output

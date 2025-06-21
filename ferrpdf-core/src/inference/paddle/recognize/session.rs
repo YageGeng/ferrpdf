@@ -1,6 +1,6 @@
 use image::{DynamicImage, imageops::FilterType};
 use ndarray::prelude::*;
-use ort::session::{Session, builder::SessionBuilder};
+use ort::session::{RunOptions, Session, builder::SessionBuilder};
 use ort::value::TensorRef;
 use snafu::{OptionExt, ResultExt};
 
@@ -223,6 +223,41 @@ impl OnnxSession<PaddleRec> for PaddleRecSession<PaddleRec> {
                 input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "recognize-input"})?
             ])
             .context(InferenceSnafu {})?;
+
+        // Extract the output tensor and convert to ndarray
+        let tensor = output
+            .get(output_name)
+            .context(NotFoundOutputSnafu { output_name })?
+            .try_extract_array::<f32>()
+            .context(TensorSnafu {
+                stage: "recognize-extract",
+            })?;
+
+        // Get the actual output shape and convert to owned array
+        // Reshape to 3D array [batch_size, sequence_length, vocab_size]
+        let shape = tensor.shape();
+        let output_array = tensor
+            .to_shape([shape[0], shape[1], shape[2]])
+            .context(ShapeSnafu { stage: "recognize" })?
+            .to_owned();
+
+        Ok(output_array)
+    }
+
+    async fn infer_async(
+        &mut self,
+        input: <PaddleRec as Model>::Input,
+        input_name: &str,
+        output_name: &str,
+        options: &RunOptions,
+    ) -> Result<<PaddleRec as Model>::Output, FerrpdfError> {
+        // Run inference
+        let output = self
+            .session
+            .run_async(ort::inputs![
+                input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "recognize-input"})?
+            ], options)
+            .context(InferenceSnafu {})?.await.context(InferenceSnafu{})?;
 
         // Extract the output tensor and convert to ndarray
         let tensor = output

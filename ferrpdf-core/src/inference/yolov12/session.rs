@@ -9,7 +9,7 @@ use imageproc::{
 };
 use ndarray::prelude::*;
 use ort::{
-    session::{Session, builder::SessionBuilder},
+    session::{RunOptions, Session, builder::SessionBuilder},
     value::TensorRef,
 };
 use snafu::{OptionExt, ResultExt};
@@ -128,6 +128,39 @@ impl OnnxSession<Yolov12> for YoloSession<Yolov12> {
                 input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "layout-input"})?
             ])
             .context(InferenceSnafu {})?;
+
+        // Extract the output tensor and convert to ndarray
+        let tensor = output
+            .get(output_name)
+            .context(NotFoundOutputSnafu { output_name })?
+            .try_extract_array::<f32>()
+            .context(TensorSnafu {
+                stage: "layout-extract",
+            })?;
+
+        // Reshape tensor to expected output dimensions and return owned copy
+        let output = tensor
+            .to_shape(self.model.config().output_size)
+            .context(ShapeSnafu { stage: "layout" })?
+            .to_owned();
+
+        Ok(output)
+    }
+
+    async fn infer_async(
+        &mut self,
+        input: <Yolov12 as Model>::Input,
+        input_name: &str,
+        output_name: &str,
+        options: &RunOptions,
+    ) -> Result<<Yolov12 as Model>::Output, FerrpdfError> {
+        // Run inference with the input tensor named "images"
+        let output = self
+            .session
+            .run_async(ort::inputs![
+                input_name => TensorRef::from_array_view(&input).context(TensorSnafu{stage: "layout-input"})?
+            ], options)
+            .context(InferenceSnafu {})?.await.context(InferenceSnafu{})?;
 
         // Extract the output tensor and convert to ndarray
         let tensor = output

@@ -15,6 +15,11 @@ pub enum FerrpdfError {
     },
     #[snafu(display("Onnx Inference error: {}", source))]
     Inference { source: ort::error::Error },
+    #[snafu(display("Onnx RunOption for {} error: {}", stage, source))]
+    RunConfig {
+        source: ort::error::Error,
+        stage: String,
+    },
     #[snafu(display("Onnx Output can not found {}", output_name))]
     NotFoundOutput { output_name: String },
     #[snafu(display("Ndarray Shape error at stage `{}`: {}", stage, source))]
