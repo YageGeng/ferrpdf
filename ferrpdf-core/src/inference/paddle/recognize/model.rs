@@ -1,4 +1,5 @@
 use crate::inference::model::Model;
+use derive_builder::Builder;
 use ndarray::{ArrayBase, Dim, OwnedRepr};
 
 const PADDLE_RECOGNIZE: &[u8] =
@@ -15,7 +16,8 @@ pub type PaddleOutput = ArrayBase<OwnedRepr<f32>, Dim<[usize; 3]>>;
 ///
 /// This configuration controls various aspects of the text recognition (OCR) process,
 /// including model input requirements and preprocessing parameters.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Builder)]
+#[builder[setter(into)]]
 pub struct PaddleRecConfig {
     /// Required input height for the model (model expects this exact height)
     ///

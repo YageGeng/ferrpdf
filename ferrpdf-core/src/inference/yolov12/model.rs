@@ -1,3 +1,4 @@
+use derive_builder::Builder;
 use ndarray::{ArrayBase, Dim, OwnedRepr};
 
 use crate::{consts::*, inference::model::Model};
@@ -15,7 +16,8 @@ pub type Yolov12Output = ArrayBase<OwnedRepr<f32>, Dim<[usize; 3]>>;
 ///
 /// This configuration controls various aspects of the document layout detection process,
 /// including model input requirements, post-processing thresholds, and output filtering.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Builder)]
+#[builder(setter(into))]
 pub struct Yolov12Config {
     /// Required input width for the model (model expects this exact width)
     ///

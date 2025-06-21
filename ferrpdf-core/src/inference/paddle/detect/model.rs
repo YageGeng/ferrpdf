@@ -1,4 +1,5 @@
 use crate::inference::model::Model;
+use derive_builder::Builder;
 use ndarray::{ArrayBase, Dim, OwnedRepr};
 
 const PADDLE_DETECT: &[u8] = include_bytes!("../../../../../models/ch_PP-OCRv5_mobile_det.onnx");
@@ -14,7 +15,8 @@ pub type PaddleDetOutput = ArrayBase<OwnedRepr<f32>, Dim<[usize; 3]>>;
 ///
 /// This configuration controls various aspects of the text detection process,
 /// including model input requirements, post-processing thresholds, and output formatting.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Builder)]
+#[builder[setter(into)]]
 pub struct PaddleDetConfig {
     /// Required input width for the model (model expects this exact width)
     ///
@@ -124,6 +126,23 @@ pub struct PaddleDetConfig {
     /// Typical range: 0.3 - 0.8
     /// Default: 0.6 (merge if overlap ratio > 60%)
     pub overlap_ratio_threshold: f32,
+
+    /// Y-coordinate tolerance threshold for reading order sorting (in pixels)
+    ///
+    /// When sorting text detections by reading order, this threshold determines
+    /// the maximum vertical distance between two text boxes to be considered
+    /// on the same line. Text boxes within this tolerance are sorted horizontally
+    /// (left-to-right), while boxes beyond this tolerance are sorted vertically
+    /// (top-to-bottom).
+    ///
+    /// - Higher values: More text boxes are considered on the same line
+    /// - Lower values: More strict line separation
+    ///
+    /// This is crucial for proper reading order in multi-line text documents.
+    ///
+    /// Typical range: 3.0 - 15.0
+    /// Default: 5.0
+    pub y_tolerance_threshold: f32,
 }
 
 impl Default for PaddleDetConfig {
@@ -141,6 +160,7 @@ impl Default for PaddleDetConfig {
             max_side_thresh: 3.0,
             text_padding: 6.0,
             overlap_ratio_threshold: 0.6,
+            y_tolerance_threshold: 5.0,
         }
     }
 }

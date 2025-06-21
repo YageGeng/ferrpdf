@@ -499,13 +499,23 @@ impl PaddleDetSession<PaddleDet> {
         let width = f_map_mat.width() as i32;
         let height = f_map_mat.height() as i32;
 
-        // Clamp to image boundaries
-        let xmin = xmin.max(0).min(width - 1);
-        let xmax = xmax.max(0).min(width - 1);
-        let ymin = ymin.max(0).min(height - 1);
-        let ymax = ymax.max(0).min(height - 1);
+        // Create a Bbox and use its clamp method for consistency
+        let bbox = Bbox::new(
+            glam::Vec2::new(xmin as f32, ymin as f32),
+            glam::Vec2::new(xmax as f32, ymax as f32),
+        );
 
-        (xmin, xmax, ymin, ymax)
+        let clamped_bbox = bbox.clamp(
+            glam::Vec2::ZERO,
+            glam::Vec2::new((width - 1) as f32, (height - 1) as f32),
+        );
+
+        (
+            clamped_bbox.min.x as i32,
+            clamped_bbox.max.x as i32,
+            clamped_bbox.min.y as i32,
+            clamped_bbox.max.y as i32,
+        )
     }
 
     /// Create binary mask for contour region
@@ -615,8 +625,8 @@ impl PaddleDetSession<PaddleDet> {
 
         // Sort by area (larger bboxes first) to prioritize merging into larger ones
         detections.sort_by(|a, b| {
-            let area_a = (a.bbox.max.x - a.bbox.min.x) * (a.bbox.max.y - a.bbox.min.y);
-            let area_b = (b.bbox.max.x - b.bbox.min.x) * (b.bbox.max.y - b.bbox.min.y);
+            let area_a = a.bbox.area();
+            let area_b = b.bbox.area();
             area_b
                 .partial_cmp(&area_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -670,8 +680,7 @@ impl PaddleDetSession<PaddleDet> {
                 let overlap_ratio = current_bbox.overlap_ratio(&other.bbox);
 
                 // Also check if the other bbox is mostly contained within current bbox
-                let other_area =
-                    (other.bbox.max.x - other.bbox.min.x) * (other.bbox.max.y - other.bbox.min.y);
+                let other_area = other.bbox.area();
                 let intersection_area = current_bbox.intersection(&other.bbox);
                 let containment_ratio = intersection_area / other_area;
 
@@ -915,8 +924,9 @@ impl PaddleDetSession<PaddleDet> {
 
     /// Sorts text detections by reading order: top-to-bottom, left-to-right for same-line elements
     pub fn sort_by_reading_order(&self, detections: &mut [TextDetection]) {
-        // y_tolerance_threshold 可根据模型配置暴露
-        let y_tolerance_threshold = 5.0;
+        let config = self.model.config();
+        let y_tolerance_threshold = config.y_tolerance_threshold;
+
         detections.sort_by(|a, b| {
             let a_center = a.bbox.center();
             let b_center = b.bbox.center();
@@ -1350,5 +1360,52 @@ mod tests {
 
         println!("Overlapping bbox removal test passed");
         Ok(())
+    }
+
+    #[test]
+    fn test_y_tolerance_threshold_config() {
+        use crate::inference::paddle::detect::model::PaddleDetConfig;
+        use glam::Vec2;
+
+        // Test default value
+        let config = PaddleDetConfig::default();
+        assert_eq!(config.y_tolerance_threshold, 5.0);
+
+        // Test custom value
+        let paddle_det_config = PaddleDetConfig {
+            y_tolerance_threshold: 10.0,
+            ..Default::default()
+        };
+        assert_eq!(paddle_det_config.y_tolerance_threshold, 10.0);
+
+        // Test that the session uses the config value
+        let model = PaddleDet::with_config(paddle_det_config);
+        let session = PaddleDetSession::new(SessionBuilder::new().unwrap(), model).unwrap();
+
+        // Create test detections with different y-coordinates
+        let mut detections = vec![
+            TextDetection {
+                bbox: Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0)),
+                proba: 0.9,
+            },
+            TextDetection {
+                bbox: Bbox::new(Vec2::new(20.0, 5.0), Vec2::new(30.0, 15.0)), // y_diff = 5
+                proba: 0.8,
+            },
+            TextDetection {
+                bbox: Bbox::new(Vec2::new(40.0, 15.0), Vec2::new(50.0, 25.0)), // y_diff = 10
+                proba: 0.7,
+            },
+        ];
+
+        // Sort by reading order
+        session.sort_by_reading_order(&mut detections);
+
+        // Verify sorting behavior based on y_tolerance_threshold
+        // With threshold = 10.0, the first two should be considered on same line
+        // and sorted by x-coordinate, while the third should be below
+        assert_eq!(detections[0].bbox.center().x, 5.0); // First bbox (x=5)
+        assert_eq!(detections[1].bbox.center().x, 25.0); // Second bbox (x=25)
+        assert_eq!(detections[2].bbox.center().x, 45.0); // Third bbox (x=45)
     }
 }
