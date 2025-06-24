@@ -1,8 +1,15 @@
 use image::DynamicImage;
-use ort::session::RunOptions;
+use ort::{
+    execution_providers::CPUExecutionProvider,
+    session::{
+        RunOptions, Session,
+        builder::{GraphOptimizationLevel, SessionBuilder},
+    },
+};
+use snafu::ResultExt;
 use std::future::Future;
 
-use crate::error::FerrpdfError;
+use crate::error::{FerrpdfError, OrtInitSnafu};
 
 pub trait Model {
     type Input;
@@ -72,4 +79,33 @@ pub trait OnnxSession<M: Model> {
             self.postprocess(output, extra)
         }
     }
+}
+
+/// common session builder
+pub fn session_builder() -> Result<SessionBuilder, FerrpdfError> {
+    let session_builder = Session::builder()
+        .context(OrtInitSnafu { stage: "builder" })?
+        .with_execution_providers(vec![
+            #[cfg(all(feature = "coreml", target_os = "macos"))]
+            {
+                use ort::execution_providers::CoreMLExecutionProvider;
+                use ort::execution_providers::coreml::*;
+                CoreMLExecutionProvider::default()
+                    .with_model_format(CoreMLModelFormat::MLProgram)
+                    .build()
+            },
+            #[cfg(all(feature = "cuda"))]
+            {
+                use ort::execution_providers::CUDAExecutionProvider;
+                CUDAExecutionProvider::default().build()
+            },
+            CPUExecutionProvider::default().build(),
+        ])
+        .context(OrtInitSnafu { stage: "provider" })?
+        .with_optimization_level(GraphOptimizationLevel::Level1)
+        .context(OrtInitSnafu {
+            stage: "optimization",
+        })?;
+
+    Ok(session_builder)
 }

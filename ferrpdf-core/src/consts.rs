@@ -45,6 +45,9 @@ pub const OUTPUT_SIZE: [usize; 3] = [1, LABEL_PROBA_SIZE, 21504];
 /// - Higher values (0.3-0.5): More conservative, may miss some true detections
 pub const PROBA_THRESHOLD: f32 = 0.2;
 
+pub const YOLOV12_INPUT_IMAGE_WIDTH: usize = 1024;
+pub const YOLOV12_INPUT_IMAGE_HEIGHT: usize = 1024;
+
 /// Background fill value for image preprocessing.
 ///
 /// When resizing images, areas not covered by the original image
@@ -55,5 +58,17 @@ pub const BACKGROUND_FILL_VALUE: f32 = 144.0 / 255.0;
 // Pre-calculate normalization constants for performance
 // Original: (r/255.0 - 0.5) / 0.5 = r/127.5 - 1.0
 pub const NORMALIZATION_SCALE: f32 = 1.0 / 127.5;
+
+/// Environment variable name for specifying the path to the PDFium dynamic library.
+///
+/// If the environment variable is not set, the library will attempt to locate
+/// the PDFium dynamic library in the system's default library paths.
+pub const PDFIUM_LIB_PATH_ENV_NAME: &str = "PDFIUM_DYNAMIC_LIB_PATH";
+
+/// Maximum number of concurrent render requests to PDFium.
+///
+/// This value controls the number of concurrent requests that can be processed
+/// by PDFium. Adjusting this value can help manage resource usage and performance.
+pub const MAX_CONCURRENT_RENDER_QUEUE: usize = 10;
 
 pub const FONT: &[u8] = include_bytes!("../../fonts/DejaVuSans.ttf");

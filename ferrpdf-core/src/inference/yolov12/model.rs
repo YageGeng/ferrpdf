@@ -122,11 +122,11 @@ pub struct Yolov12Config {
 impl Default for Yolov12Config {
     fn default() -> Self {
         Self {
-            required_width: 1024,
-            required_height: 1024,
+            required_width: YOLOV12_INPUT_IMAGE_WIDTH,
+            required_height: YOLOV12_INPUT_IMAGE_HEIGHT,
             batch_size: 1,
             input_channels: 3,
-            background_fill_value: 144.0 / 255.0,
+            background_fill_value: BACKGROUND_FILL_VALUE,
             output_size: OUTPUT_SIZE,
             cxywh_size: CXYWH_OFFSET,
             label_proba_size: LABEL_PROBA_SIZE,
