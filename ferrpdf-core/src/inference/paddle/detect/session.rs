@@ -871,7 +871,6 @@ impl PaddleDetSession<PaddleDet> {
     }
 
     pub fn draw<P: AsRef<Path>>(
-        &self,
         output: P,
         detections: &[TextDetection],
         image: &DynamicImage,

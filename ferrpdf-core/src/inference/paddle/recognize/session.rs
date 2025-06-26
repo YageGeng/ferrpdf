@@ -53,7 +53,7 @@ impl PaddleRecSession<PaddleRec> {
     pub fn recognize_text_region(
         &mut self,
         image: &DynamicImage,
-        bbox: &Bbox,
+        bbox: Bbox,
     ) -> Result<String, FerrpdfError> {
         // Crop the image to the bounding box region
         let cropped_image = self.crop_image_region(image, bbox)?;
@@ -68,7 +68,7 @@ impl PaddleRecSession<PaddleRec> {
     pub async fn recognize_text_region_async(
         &mut self,
         image: &DynamicImage,
-        bbox: &Bbox,
+        bbox: Bbox,
         run_options: &RunOptions,
     ) -> Result<String, FerrpdfError> {
         // Crop the image to the bounding box region
@@ -87,7 +87,7 @@ impl PaddleRecSession<PaddleRec> {
         layouts: &mut [Layout],
     ) -> Result<(), FerrpdfError> {
         for layout in layouts.iter_mut() {
-            if let Ok(text) = self.recognize_text_region(image, &layout.bbox) {
+            if let Ok(text) = self.recognize_text_region(image, layout.bbox) {
                 if !text.trim().is_empty() {
                     layout.text = Some(text.trim().to_string());
                 }
@@ -100,7 +100,7 @@ impl PaddleRecSession<PaddleRec> {
     fn crop_image_region(
         &self,
         image: &DynamicImage,
-        bbox: &Bbox,
+        bbox: Bbox,
     ) -> Result<DynamicImage, FerrpdfError> {
         let image_width = image.width() as f32;
         let image_height = image.height() as f32;
@@ -347,7 +347,7 @@ mod tests {
         // Test cropping functionality
         use crate::analysis::bbox::Bbox;
         let bbox = Bbox::new(glam::Vec2::new(10.0, 5.0), glam::Vec2::new(90.0, 40.0));
-        let cropped = session.crop_image_region(&test_image, &bbox)?;
+        let cropped = session.crop_image_region(&test_image, bbox)?;
         println!(
             "Cropped image dimensions: {}x{}",
             cropped.width(),

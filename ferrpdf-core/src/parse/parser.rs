@@ -1,21 +1,28 @@
-use std::{ops::Range, path::PathBuf, sync::Arc};
+use std::{
+    ops::{Deref, Range},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
+use derive_builder::Builder;
 use futures::future;
 use glam::Vec2;
 use image::DynamicImage;
 use ort::session::RunOptions;
 use pdfium_render::prelude::{PdfDocument, PdfPageRenderRotation, PdfRenderConfig, Pdfium};
+use plsfix::fix_text;
 use snafu::ResultExt;
 use tokio::sync::Mutex;
 use tracing::*;
 
 use crate::{
+    analysis::labels::Label,
     consts::*,
     error::{EnvNotFoundSnafu, FerrpdfError, PdfiumSnafu, RunConfigSnafu},
     inference::{
         model::{OnnxSession, session_builder},
         paddle::{
-            detect::{PaddleDet, PaddleDetSession},
+            detect::{PaddleDet, PaddleDetSession, TextDetection},
             recognize::{PaddleRec, PaddleRecSession},
         },
         yolov12::{DocMeta, PdfLayouts, YoloSession, Yolov12},
@@ -31,17 +38,17 @@ pub struct PdfParser {
     pub config: ParserConfig,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Builder)]
 pub struct ParserConfig {
-    pub trim_control_chars: bool,
+    pub auto_clean_text: bool,
     pub coverage_threshold: f32,
 }
 
 impl Default for ParserConfig {
     fn default() -> Self {
         Self {
-            trim_control_chars: true,
-            coverage_threshold: 10.0,
+            auto_clean_text: true,
+            coverage_threshold: 0.002,
         }
     }
 }
@@ -50,6 +57,7 @@ pub struct Pdf {
     pub path: PathBuf,
     pub password: Option<String>,
     pub range: Range<u16>,
+    pub debug: Option<PathBuf>,
 }
 
 pub struct PdfPage {
@@ -59,7 +67,8 @@ pub struct PdfPage {
 
 pub struct LackTextBlock<'a> {
     pub page_no: usize,
-    pub layout: &'a mut Layout,
+    pub layout: Arc<Mutex<&'a mut Layout>>,
+    pub scale: f32,
 }
 
 impl PdfParser {
@@ -70,7 +79,7 @@ impl PdfParser {
                 name: PDFIUM_LIB_PATH_ENV_NAME,
             })?;
 
-        // Create pdfium instanc
+        // Create pdfium instance
         let pdfium = Pdfium::new(
             Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
                 &pdfium_lib_path,
@@ -94,20 +103,67 @@ impl PdfParser {
         })
     }
 
-    pub async fn parse(&self, pdf: Pdf) -> Result<(), FerrpdfError> {
-        let document = self.load_pdf(&pdf)?;
+    pub async fn parse(&self, pdf: &Pdf) -> Result<Vec<PdfLayouts>, FerrpdfError> {
+        let document = self.load_pdf(pdf)?;
 
         let pdf_images = self.render(&document, &pdf.range)?;
 
         let mut layouts = self.layout_analyze(&pdf_images).await?;
 
-        let need_ocr_layouts = self.extra_pdf_text(&document, &mut layouts)?;
-        if !need_ocr_layouts.is_empty() {
-            todo!()
+        if let Some(path) = pdf.debug.as_ref() {
+            Self::draw_layout_bbox(path, &layouts, &pdf_images)?;
         }
 
-        println!("{}", serde_json::to_string(&layouts).unwrap());
+        let lack_text_block = self.extra_pdf_text(&document, &mut layouts)?;
+        if !lack_text_block.is_empty() {
+            self.detect_and_ocr(&lack_text_block, &pdf_images, pdf)
+                .await?;
+        }
 
+        Ok(layouts)
+    }
+
+    fn draw_layout_bbox<P: AsRef<Path>>(
+        output: P,
+        layout: &[PdfLayouts],
+        images: &[PdfPage],
+    ) -> Result<(), FerrpdfError> {
+        let path = output.as_ref();
+        for (idx, PdfLayouts { layouts, metadata }) in layout.iter().enumerate() {
+            YoloSession::draw(
+                path.join(format!("layout-{}.png", metadata.page)),
+                metadata,
+                layouts,
+                &images[idx].image,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn draw_detection_bbox<P: AsRef<Path>>(
+        output: P,
+        layout: &[(usize, usize, Result<Vec<TextDetection>, FerrpdfError>)],
+        images: &[PdfPage],
+    ) -> Result<(), FerrpdfError> {
+        let path = output.as_ref();
+        for (idx, page_no, detections) in layout.iter().flat_map(|(idx, page_no, result)| {
+            result
+                .as_ref()
+                .ok()
+                .map(|detections| (idx, page_no, detections))
+        }) {
+            let pdf_image = &images[*page_no];
+
+            PaddleDetSession::draw(
+                path.join(format!(
+                    "detections-{}-{}.png",
+                    pdf_image.metadata.page, idx
+                )),
+                detections,
+                &pdf_image.image,
+            )?;
+        }
         Ok(())
     }
 
@@ -206,7 +262,7 @@ impl PdfParser {
             .flatten()
             .collect::<Vec<_>>();
 
-        // sort by page index(optionally)
+        // sort by page index
         result.sort_by(|a, b| a.metadata.page.cmp(&b.metadata.page));
 
         Ok(result)
@@ -230,9 +286,8 @@ impl PdfParser {
                 let pdf_bbox = layout.bbox.to_pdf_rect(metadata.pdf_size.y);
                 let mut text = page_text.inside_rect(pdf_bbox);
 
-                if self.config.trim_control_chars {
-                    // todo log
-                    text = text.chars().filter(|c| !c.is_control()).collect();
+                if self.config.auto_clean_text {
+                    text = fix_text(&text, None);
                 }
 
                 let text_len = text.len();
@@ -248,10 +303,13 @@ impl PdfParser {
 
                 layout.text = Some(text);
 
-                if text_coverage <= self.config.coverage_threshold {
+                if matches!(layout.label, Label::Picture)
+                    || text_coverage <= self.config.coverage_threshold
+                {
                     need_ocr_layouts.push(LackTextBlock {
-                        layout,
+                        layout: Arc::new(Mutex::new(layout)),
                         page_no: metadata.page,
+                        scale: metadata.scale,
                     });
                 }
             }
@@ -260,12 +318,11 @@ impl PdfParser {
         Ok(need_ocr_layouts)
     }
 
-    #[allow(dead_code)]
     async fn detect_and_ocr(
         &self,
         lack_text_blocks: &[LackTextBlock<'_>],
         pdf_images: &[PdfPage],
-        scale: f32,
+        pdf: &Pdf,
     ) -> Result<(), FerrpdfError> {
         let run_options = RunOptions::new().context(RunConfigSnafu {
             stage: "run-options",
@@ -282,44 +339,117 @@ impl PdfParser {
                 let page_no = lack_block.page_no;
                 let image = &pdf_images[page_no].image;
 
+                let layout = lack_block.layout.lock().await;
                 let detections = detect_session
-                    .detect_text_in_layout_async(image, lack_block.layout, scale, &run_options)
+                    .detect_text_in_layout_async(
+                        image,
+                        layout.deref(),
+                        lack_block.scale,
+                        &run_options,
+                    )
                     .await;
-                (idx, detections)
+                (idx, page_no, detections)
             })
             .collect::<Vec<_>>();
 
         let text_detections = future::join_all(detect_tasks).await;
 
-        let _ = text_detections
+        if let Some(path) = pdf.debug.as_ref() {
+            Self::draw_detection_bbox(path, &text_detections, pdf_images)?;
+        }
+
+        let recognize_tasks = text_detections
             .into_iter()
-            .flat_map(|(idx, detect_result)| {
+            .flat_map(|(idx, page_no, detect_result)| {
                 if let Err(err) = detect_result.as_ref() {
                     error!("Error detecting text in layout: {}", err);
                 }
 
                 detect_result
                     .ok()
-                    .map(|detections| (idx, detections, Arc::clone(&run_options)))
+                    .map(|detections| (idx, page_no, detections, Arc::clone(&run_options)))
             })
-            .map(|(_idx, _text_detections, _run_options)| async {
-                // let image = &pdf_images[lack_text_blocks[idx].page_no].image;
+            .map(|(idx, page_no, text_detections, run_options)| async move {
+                let image = &pdf_images[page_no].image;
+                let image = Arc::new(image);
 
-                // text_detections
-                //     .into_iter()
-                //     .map(|text_detection| async {
-                //         let mut ocr_session = self.recognizer.lock().await;
-                //         ocr_session
-                //             .recognize_text_region_async(
-                //                 todo!(),
-                //                 &text_detection.bbox,
-                //                 &run_options,
-                //             )
-                //             .await
-                //     })
-                //     .collect::<Vec<_>>();
+                let recognize_tasks = text_detections
+                    .into_iter()
+                    .map(|text_detection| {
+                        (text_detection, Arc::clone(&image), Arc::clone(&run_options))
+                    })
+                    .map(|(text_detection, image, run_options)| async move {
+                        let mut ocr_session = self.recognizer.lock().await;
+                        ocr_session
+                            .recognize_text_region_async(&image, text_detection.bbox, &run_options)
+                            .await
+                    })
+                    .collect::<Vec<_>>();
+                (idx, future::join_all(recognize_tasks).await)
             })
             .collect::<Vec<_>>();
+
+        for (idx, recognition) in future::join_all(recognize_tasks).await.into_iter() {
+            let mut text =
+                recognition
+                    .into_iter()
+                    .flatten()
+                    .fold(String::new(), |mut acc, text| {
+                        acc.push_str(&text);
+                        acc.push('\n');
+                        acc
+                    });
+
+            if self.config.auto_clean_text {
+                text = fix_text(&text, None);
+            }
+
+            let mut layout = lack_text_blocks[idx].layout.lock().await;
+
+            layout.text = Some(text);
+            if let Some(ocr) = layout.ocr.as_mut() {
+                ocr.is_ocr = true;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_control_chars() {
+        // STX
+        assert!('\u{0002}'.is_ascii_control());
+        assert!('\u{0002}'.is_control());
+        assert!(!'\u{0002}'.is_ascii_alphanumeric());
+        assert!(!'\u{0002}'.is_ascii_whitespace());
+        assert!(!'\u{0002}'.is_whitespace());
+
+        // space
+        assert!(' '.is_whitespace());
+        assert!(!' '.is_control());
+        // \n
+        assert!('\n'.is_whitespace());
+        assert!('\n'.is_control());
+        assert!('\n'.is_ascii_control());
+        // \r
+        assert!('\r'.is_whitespace());
+        assert!('\r'.is_control());
+        // \t
+        assert!('\t'.is_whitespace());
+        assert!('\t'.is_control());
+    }
+
+    #[tokio::test]
+    async fn test_parse() -> Result<(), FerrpdfError> {
+        let parser = PdfParser::new().unwrap();
+        let pdf = Pdf{path:"/home/isbest/Downloads/Docs/DocBank: A Benchmark Dataset for Document Layout Analysis.pdf".into(),password:None,range:0..1, debug: None };
+
+        let _ = parser.parse(&pdf).await;
 
         Ok(())
     }

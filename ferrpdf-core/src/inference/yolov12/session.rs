@@ -337,7 +337,6 @@ impl YoloSession<Yolov12> {
     }
 
     pub fn draw<P: AsRef<Path>>(
-        &self,
         output: P,
         extra: &DocMeta,
         layouts: &[Layout],
