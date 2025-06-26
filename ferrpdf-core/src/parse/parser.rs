@@ -74,12 +74,14 @@ pub struct LackTextBlock<'a> {
 impl PdfParser {
     pub fn new() -> Result<Self, FerrpdfError> {
         // Get pdfium library path
+        info!("Fetching PDFium library path from environment variable.");
         let pdfium_lib_path =
             std::env::var(PDFIUM_LIB_PATH_ENV_NAME).context(EnvNotFoundSnafu {
                 name: PDFIUM_LIB_PATH_ENV_NAME,
             })?;
 
         // Create pdfium instance
+        info!("Creating PDFium instance.");
         let pdfium = Pdfium::new(
             Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
                 &pdfium_lib_path,
@@ -90,6 +92,7 @@ impl PdfParser {
         );
 
         // Create LayoutSession
+        info!("Initializing layout, detection, and recognition sessions.");
         let layout = YoloSession::new(session_builder()?, Yolov12::new())?;
         let detect = PaddleDetSession::new(session_builder()?, PaddleDet::new())?;
         let recognizer = PaddleRecSession::new(session_builder()?, PaddleRec::new())?;
@@ -104,18 +107,24 @@ impl PdfParser {
     }
 
     pub async fn parse(&self, pdf: &Pdf) -> Result<Vec<PdfLayouts>, FerrpdfError> {
+        info!("Loading PDF document.");
         let document = self.load_pdf(pdf)?;
 
+        info!("Rendering PDF pages to images.");
         let pdf_images = self.render(&document, &pdf.range)?;
 
+        info!("Analyzing layouts in rendered PDF images.");
         let mut layouts = self.layout_analyze(&pdf_images).await?;
 
         if let Some(path) = pdf.debug.as_ref() {
+            info!("Drawing layout bounding boxes for debugging.");
             Self::draw_layout_bbox(path, &layouts, &pdf_images)?;
         }
 
+        info!("Extracting text from PDF document.");
         let lack_text_block = self.extra_pdf_text(&document, &mut layouts)?;
         if !lack_text_block.is_empty() {
+            info!("Performing text detection and OCR on missing text blocks.");
             self.detect_and_ocr(&lack_text_block, &pdf_images, pdf)
                 .await?;
         }
@@ -169,6 +178,7 @@ impl PdfParser {
 
     // load pdf
     fn load_pdf<'a, 'b: 'a>(&'a self, pdf: &'b Pdf) -> Result<PdfDocument<'a>, FerrpdfError> {
+        info!("Loading PDF from file: {:?}", pdf.path);
         let document = self
             .pdfium
             .load_pdf_from_file(&pdf.path, pdf.password.as_deref())
@@ -180,6 +190,10 @@ impl PdfParser {
 
         let range = pdf.range.clone();
         if page_number < range.start {
+            error!(
+                "Page number is less than the start of the range for PDF: {:?}",
+                pdf.path
+            );
             return Err(FerrpdfError::ParserErr {
                 stage: "parse-pdf".to_string(),
                 path: pdf.path.to_string_lossy().to_string(),
@@ -198,6 +212,7 @@ impl PdfParser {
     ) -> Result<Vec<PdfPage>, FerrpdfError> {
         let page_number = document.pages().len();
 
+        info!("Rendering pages within range: {:?}", range);
         let pdf_images = document
             .pages()
             .iter()
@@ -240,10 +255,12 @@ impl PdfParser {
         &self,
         pdf_images: &[PdfPage],
     ) -> Result<Vec<PdfLayouts>, FerrpdfError> {
+        info!("Creating run options for layout analysis.");
         let run_option = RunOptions::new().context(RunConfigSnafu {
             stage: "run-options",
         })?;
 
+        info!("Cloning layout session for analysis.");
         let layout = Arc::clone(&self.layout);
 
         let layout_tasks = pdf_images
@@ -256,6 +273,7 @@ impl PdfParser {
             })
             .collect::<Vec<_>>();
 
+        info!("Executing layout analysis tasks.");
         let mut result = future::join_all(layout_tasks)
             .await
             .into_iter()
@@ -263,6 +281,7 @@ impl PdfParser {
             .collect::<Vec<_>>();
 
         // sort by page index
+        info!("Sorting layout analysis results by page index.");
         result.sort_by(|a, b| a.metadata.page.cmp(&b.metadata.page));
 
         Ok(result)
@@ -273,9 +292,11 @@ impl PdfParser {
         document: &PdfDocument<'_>,
         layouts: &'a mut [PdfLayouts],
     ) -> Result<Vec<LackTextBlock<'a>>, FerrpdfError> {
+        info!("Identifying layouts requiring OCR.");
         let mut need_ocr_layouts = Vec::new();
         for pdf_layouts in layouts.iter_mut() {
             let metadata = pdf_layouts.metadata;
+            info!("Fetching page {} from PDF document.", metadata.page);
             let page = document
                 .pages()
                 .get(metadata.page as u16)
@@ -315,6 +336,10 @@ impl PdfParser {
             }
         }
 
+        info!(
+            "Completed text extraction. {} layouts require OCR.",
+            need_ocr_layouts.len()
+        );
         Ok(need_ocr_layouts)
     }
 
@@ -324,12 +349,17 @@ impl PdfParser {
         pdf_images: &[PdfPage],
         pdf: &Pdf,
     ) -> Result<(), FerrpdfError> {
+        info!("Creating run options for text detection and OCR.");
         let run_options = RunOptions::new().context(RunConfigSnafu {
             stage: "run-options",
         })?;
 
         let run_options = Arc::new(run_options);
 
+        info!(
+            "Starting text detection tasks for {} blocks.",
+            lack_text_blocks.len()
+        );
         let detect_tasks = lack_text_blocks
             .iter()
             .enumerate()
@@ -352,12 +382,15 @@ impl PdfParser {
             })
             .collect::<Vec<_>>();
 
+        info!("Completed text detection tasks.");
         let text_detections = future::join_all(detect_tasks).await;
 
         if let Some(path) = pdf.debug.as_ref() {
+            info!("Drawing detection bounding boxes for debugging.");
             Self::draw_detection_bbox(path, &text_detections, pdf_images)?;
         }
 
+        info!("Starting text recognition tasks.");
         let recognize_tasks = text_detections
             .into_iter()
             .flat_map(|(idx, page_no, detect_result)| {
@@ -389,6 +422,7 @@ impl PdfParser {
             })
             .collect::<Vec<_>>();
 
+        info!("Completed text recognition tasks.");
         for (idx, recognition) in future::join_all(recognize_tasks).await.into_iter() {
             let mut text =
                 recognition
