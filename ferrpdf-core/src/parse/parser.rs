@@ -14,6 +14,7 @@ use plsfix::fix_text;
 use snafu::ResultExt;
 use tokio::sync::Mutex;
 use tracing::*;
+use uuid::Uuid;
 
 use crate::{
     analysis::labels::Label,
@@ -58,6 +59,7 @@ pub struct Pdf {
     pub password: Option<String>,
     pub range: Range<u16>,
     pub debug: Option<PathBuf>,
+    pub uuid: Uuid,
 }
 
 pub struct PdfPage {
@@ -481,7 +483,9 @@ mod tests {
     #[tokio::test]
     async fn test_parse() -> Result<(), FerrpdfError> {
         let parser = PdfParser::new().unwrap();
-        let pdf = Pdf{path:"/home/isbest/Downloads/Docs/DocBank: A Benchmark Dataset for Document Layout Analysis.pdf".into(),password:None,range:0..1, debug: None };
+        let pdf = Pdf{path:"/home/isbest/Downloads/Docs/DocBank: A Benchmark Dataset for Document Layout Analysis.pdf".into(),
+            uuid: Uuid::new_v4(),
+            password:None,range:0..1, debug: None };
 
         let _ = parser.parse(&pdf).await;
 

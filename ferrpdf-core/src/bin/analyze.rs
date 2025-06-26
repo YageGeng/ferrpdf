@@ -5,6 +5,7 @@ use ferrpdf_core::{
     error::FerrpdfError,
     parse::parser::{Pdf, PdfParser},
 };
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "analyze")]
@@ -34,6 +35,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), FerrpdfError> {
+    // Initialize logging
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_target(false)
+        .init();
+
     let args = Args::parse();
 
     let parser = PdfParser::new()?;
@@ -47,6 +54,7 @@ async fn main() -> Result<(), FerrpdfError> {
 
     let pdf = Pdf {
         path: PathBuf::from(args.input),
+        uuid: Uuid::new_v4(),
         password: None,
         range,
         debug,

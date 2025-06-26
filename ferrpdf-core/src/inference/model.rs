@@ -109,15 +109,15 @@ pub fn session_builder() -> Result<SessionBuilder, FerrpdfError> {
         .with_intra_threads(4)
         .context(OrtInitSnafu {
             stage: "intra-threads",
-        })?
-        .with_inter_threads(4)
-        .context(OrtInitSnafu {
-            stage: "inter-threads",
-        })?
-        .with_parallel_execution(true)
-        .context(OrtInitSnafu {
-            stage: "parallel-enable",
         })?;
+    // .with_inter_threads(4)
+    // .context(OrtInitSnafu {
+    //     stage: "inter-threads",
+    // })?
+    // .with_parallel_execution(true)
+    // .context(OrtInitSnafu {
+    //     stage: "parallel-enable",
+    // })?;
 
     Ok(session_builder)
 }
