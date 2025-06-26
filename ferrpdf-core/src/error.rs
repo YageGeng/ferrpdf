@@ -49,4 +49,10 @@ pub enum FerrpdfError {
         source: pdfium_render::prelude::PdfiumError,
         stage: String,
     },
+    #[snafu(display("Parse pdf error on `{}` for {}, msg {}", stage, path, message))]
+    ParserErr {
+        stage: String,
+        path: String,
+        message: String,
+    },
 }

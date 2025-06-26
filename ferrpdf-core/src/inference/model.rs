@@ -105,6 +105,18 @@ pub fn session_builder() -> Result<SessionBuilder, FerrpdfError> {
         .with_optimization_level(GraphOptimizationLevel::Level1)
         .context(OrtInitSnafu {
             stage: "optimization",
+        })?
+        .with_intra_threads(4)
+        .context(OrtInitSnafu {
+            stage: "intra-threads",
+        })?
+        .with_inter_threads(4)
+        .context(OrtInitSnafu {
+            stage: "inter-threads",
+        })?
+        .with_parallel_execution(true)
+        .context(OrtInitSnafu {
+            stage: "parallel-enable",
         })?;
 
     Ok(session_builder)

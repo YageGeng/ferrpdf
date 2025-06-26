@@ -137,6 +137,50 @@ impl PaddleDetSession<PaddleDet> {
         Ok(results)
     }
 
+    pub async fn detect_text_in_layout_async(
+        &mut self,
+        image: &DynamicImage,
+        layout: &Layout,
+        pdf_to_image_scale: f32,
+        run_options: &RunOptions,
+    ) -> Result<Vec<TextDetection>, FerrpdfError> {
+        // Convert layout bbox from PDF coordinates to image coordinates
+        let image_bbox = layout.bbox.scale(pdf_to_image_scale);
+
+        // Crop the image to the layout region
+        let cropped_image = self.crop_image_region(image, &image_bbox)?;
+
+        // Get original and resized shapes for the cropped region
+        let (orig_w, orig_h) = cropped_image.dimensions();
+        let config = self.model.config();
+        let scale = f32::min(
+            config.required_width as f32 / orig_w as f32,
+            config.required_height as f32 / orig_h as f32,
+        );
+        let new_w = (orig_w as f32 * scale) as u32;
+        let new_h = (orig_h as f32 * scale) as u32;
+
+        let extra = DetExtra {
+            original_shape: (orig_w, orig_h),
+            resized_shape: (new_w, new_h),
+            layout_bbox: Some(image_bbox),
+        };
+
+        // Run detection on cropped image
+        let detections = self.run_async(&cropped_image, extra, run_options).await?;
+
+        // Transform detections back to original image coordinates
+        let transformed_detections = detections
+            .into_iter()
+            .map(|det| TextDetection {
+                bbox: det.bbox.translate(image_bbox.min),
+                proba: det.proba,
+            })
+            .collect();
+
+        Ok(transformed_detections)
+    }
+
     /// Crop image to a specific bounding box region
     fn crop_image_region(
         &self,
@@ -1102,6 +1146,7 @@ mod tests {
                 page_no: 0,
                 bbox_id: 0,
                 proba: 0.9,
+                ocr: None,
                 text: None,
             },
             Layout {
@@ -1110,6 +1155,7 @@ mod tests {
                 page_no: 0,
                 bbox_id: 1,
                 proba: 0.85,
+                ocr: None,
                 text: None,
             },
         ];

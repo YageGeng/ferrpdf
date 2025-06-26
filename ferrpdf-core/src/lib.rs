@@ -3,4 +3,4 @@ pub mod consts;
 pub mod error;
 pub mod inference;
 pub mod layout;
-pub mod parser;
+pub mod parse;

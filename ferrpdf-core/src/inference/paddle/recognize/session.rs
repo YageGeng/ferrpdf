@@ -64,6 +64,22 @@ impl PaddleRecSession<PaddleRec> {
         Ok(text)
     }
 
+    /// Extract text from a specific region of an image
+    pub async fn recognize_text_region_async(
+        &mut self,
+        image: &DynamicImage,
+        bbox: &Bbox,
+        run_options: &RunOptions,
+    ) -> Result<String, FerrpdfError> {
+        // Crop the image to the bounding box region
+        let cropped_image = self.crop_image_region(image, bbox)?;
+
+        // Run OCR on the cropped region
+        let text = self.run_async(&cropped_image, (), run_options).await?;
+
+        Ok(text)
+    }
+
     /// Extract text from multiple regions in an image
     pub fn recognize_text_regions(
         &mut self,

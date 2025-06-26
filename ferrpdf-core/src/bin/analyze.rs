@@ -183,9 +183,9 @@ impl Analyzer {
 
         info!(
             "Layout analysis completed. Found {} elements",
-            layouts.len()
+            layouts.layouts.len()
         );
-        Ok((layouts, doc_meta))
+        Ok((layouts.layouts, doc_meta))
     }
 
     /// Save analysis results to output directory

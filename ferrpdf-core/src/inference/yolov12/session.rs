@@ -13,6 +13,7 @@ use ort::{
     session::{RunOptions, Session, builder::SessionBuilder},
     value::TensorRef,
 };
+use serde::Serialize;
 use snafu::{OptionExt, ResultExt};
 
 use crate::{
@@ -32,13 +33,19 @@ pub struct YoloSession<M: Model> {
 }
 
 /// Document metadata
-#[derive(Clone, Copy, Builder)]
+#[derive(Clone, Copy, Builder, Debug, Serialize)]
 #[builder(setter(into))]
 pub struct DocMeta {
     pub pdf_size: Vec2,
     pub image_size: Vec2,
     pub scale: f32,
     pub page: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PdfLayouts {
+    pub layouts: Vec<Layout>,
+    pub metadata: DocMeta,
 }
 
 impl YoloSession<Yolov12> {
@@ -52,7 +59,7 @@ impl YoloSession<Yolov12> {
 }
 
 impl OnnxSession<Yolov12> for YoloSession<Yolov12> {
-    type Output = Vec<Layout>;
+    type Output = PdfLayouts;
     type Extra = DocMeta;
 
     fn preprocess(&self, image: &DynamicImage) -> Result<<Yolov12 as Model>::Input, FerrpdfError> {
@@ -110,11 +117,13 @@ impl OnnxSession<Yolov12> for YoloSession<Yolov12> {
         // merge overlapping boxes
         self.nms(&mut layouts);
 
-        // println!("{}", layouts.len());
         // sort bbox order by top-left first
         self.sort_by_reading_order(&mut layouts);
 
-        Ok(layouts)
+        Ok(PdfLayouts {
+            layouts,
+            metadata: extra,
+        })
     }
 
     fn infer(
@@ -220,7 +229,7 @@ impl YoloSession<Yolov12> {
 
             // Convert from YOLO center-size format to bounding box and clamp to image bounds
             let bbox = Bbox::from_center_size(Vec2::new(cx, cy), Vec2::new(w, h))
-                .clamp(Vec2::new(0.0, 0.0), extra.image_size)
+                .clamp(Vec2::ZERO, extra.image_size)
                 .scale(scale); // transform to pdf coordinates
 
             // Create layout element with detected information
@@ -230,6 +239,7 @@ impl YoloSession<Yolov12> {
                 page_no: extra.page,
                 bbox_id: label_idx,
                 proba,
+                ocr: None,
                 text: None, // Text content will be extracted later
             };
             label_idx += 1;
@@ -607,6 +617,7 @@ mod tests {
                 page_no: 0,
                 bbox_id: 0,
                 proba: 0.9,
+                ocr: None,
                 text: None,
             },
             Layout {
@@ -618,6 +629,7 @@ mod tests {
                 page_no: 0,
                 bbox_id: 1,
                 proba: 0.95,
+                ocr: None,
                 text: None,
             },
             Layout {
@@ -629,6 +641,7 @@ mod tests {
                 page_no: 0,
                 bbox_id: 2,
                 proba: 0.98,
+                ocr: None,
                 text: None,
             },
             Layout {
@@ -640,6 +653,7 @@ mod tests {
                 page_no: 0,
                 bbox_id: 3,
                 proba: 0.85,
+                ocr: None,
                 text: None,
             },
             Layout {
@@ -651,6 +665,7 @@ mod tests {
                 page_no: 0,
                 bbox_id: 4,
                 proba: 0.88,
+                ocr: None,
                 text: None,
             },
         ];
