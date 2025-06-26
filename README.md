@@ -4,13 +4,14 @@ A Rust-based PDF content extraction tool that combines PDF rendering with deep l
 
 ## Features
 
-- **PDF to Image Conversion**: Convert PDF pages to high-quality images using PDFium
-- **Layout Analysis**: Detect and classify document elements using YOLOv12 model trained on DocLayNet
-- **Text Detection & OCR**: Extract text content using PaddleOCR with PaddlePaddle models
-- **Bounding Box Visualization**: Draw detected layout elements and text regions with color-coded bounding boxes
-- **Reading Order Sorting**: Automatically sort detected elements in natural reading order
-- **Multi-column Support**: Handle both single and multi-column document layouts
-- **Text Line Merging**: Intelligently merge overlapping text detections into coherent text lines
+- **PDF to Image Conversion**: Convert PDF pages to high-quality images using PDFium with configurable rendering options
+- **Layout Analysis**: Detect and classify document elements using YOLOv12 model trained on DocLayNet, with advanced sorting by page index
+- **Text Detection & OCR**: Extract text content using PaddleOCR with PaddlePaddle models, including layout-aware detection and multi-language support
+- **Bounding Box Visualization**: Draw detected layout elements and text regions with color-coded bounding boxes, including detection and OCR results
+- **Reading Order Sorting**: Automatically sort detected elements in natural reading order, optimized for multi-column layouts
+- **Multi-column Support**: Handle both single and multi-column document layouts with intelligent merging of text lines
+- **Text Line Merging**: Intelligently merge overlapping text detections into coherent text lines, with configurable thresholds
+- **Debug Mode**: Save intermediate results such as layout bounding boxes and text detection visualizations for debugging purposes
 
 ## Detected Layout Elements
 
@@ -75,10 +76,10 @@ cargo run --bin analyze -- input.pdf
 cargo run --bin analyze -- input.pdf --page 2
 
 # Specify output directory
-cargo run --bin analyze -- input.pdf --output results
+cargo run --bin analyze -- input.pdf --output results --debug
 
 # Full example
-cargo run --bin analyze -- "document.pdf" --page 0 --output analysis_results
+cargo run --bin analyze -- "document.pdf" --page 0 --output analysis_results --debug
 ```
 
 #### Options
@@ -89,9 +90,8 @@ cargo run --bin analyze -- "document.pdf" --page 0 --output analysis_results
 
 #### Output Files
 
-- `page-{N}.jpg`: Original page rendered as image
-- `analysis-page-{N}.jpg`: Layout analysis result with bounding boxes and labels
-- `text-detection-page-{N}.jpg`: Text detection visualization with bounding boxes and confidence scores
+- `analysis-{page}.jpg`: Layout analysis result with bounding boxes and labels
+- `detection-{page}-{N}.jpg`: Text detection visualization with bounding boxes and confidence scores
 
 ### Individual Tools
 
@@ -172,13 +172,15 @@ cargo run --bin analyze -- "document.pdf" --output my_analysis
 ### Model Pipeline
 
 ```
-PDF Page → PDFium Rendering → 1024x1024 Image → YOLOv12 Layout Detection
+PDF Page → PDFium Rendering → Configurable Image Dimensions → YOLOv12 Layout Detection
                                                       ↓
                                               Layout Regions → PaddleOCR Text Detection
                                                       ↓
                                               Text Regions → PaddleOCR Text Recognition
                                                       ↓
                                               Extracted Text + Coordinates
+                                                      ↓
+                                      Debug Visualization (Optional)
 ```
 
 ## Development
@@ -187,6 +189,14 @@ PDF Page → PDFium Rendering → 1024x1024 Image → YOLOv12 Layout Detection
 
 ```bash
 cargo test
+```
+
+### Debugging
+
+Enable debug mode to save intermediate results such as layout bounding boxes and text detection visualizations:
+
+```bash
+cargo run --bin analyze -- --page 1 input.pdf --debug
 ```
 
 ### Linting
@@ -245,6 +255,11 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 5. **OCR Text Recognition Issues**
    ```
    Solution: Ensure text is clear and properly rendered, adjust detection thresholds
+   ```
+
+6. **Debug Output Not Generated**
+   ```
+   Solution: Ensure debug mode is enabled with the --debug flag and specify a valid output directory
    ```
 
 ### Performance Tips

@@ -37,7 +37,7 @@ async fn main() -> Result<(), FerrpdfError> {
     let args = Args::parse();
 
     let parser = PdfParser::new()?;
-    let range = parse_page_range(&args.page)?;
+    let range = parse_page_range(&args.page);
 
     let debug = if args.debug {
         Some(PathBuf::from(args.output))
@@ -59,7 +59,7 @@ async fn main() -> Result<(), FerrpdfError> {
     Ok(())
 }
 
-fn parse_page_range(page: &Option<String>) -> Result<std::ops::Range<u16>, FerrpdfError> {
+fn parse_page_range(page: &Option<String>) -> std::ops::Range<u16> {
     match page {
         Some(range_str) => {
             let parts: Vec<&str> = range_str.split("..").collect();
@@ -67,23 +67,15 @@ fn parse_page_range(page: &Option<String>) -> Result<std::ops::Range<u16>, Ferrp
                 [start, end] => {
                     let start = start.parse::<u16>().unwrap_or(0);
                     let end = end.parse::<u16>().unwrap_or(u16::MAX);
-                    Ok(start..end)
+                    start..end
                 }
                 [start] => {
-                    let start = start.parse::<u16>().map_err(|_| FerrpdfError::ParserErr {
-                        stage: "parse-page-range".to_string(),
-                        path: "CLI argument".to_string(),
-                        message: "Invalid start page".to_string(),
-                    })?;
-                    Ok(0..start)
+                    let start = start.parse::<u16>().ok().unwrap_or(u16::MAX);
+                    0..start
                 }
-                _ => Err(FerrpdfError::ParserErr {
-                    stage: "parse-page-range".to_string(),
-                    path: "CLI argument".to_string(),
-                    message: "Invalid page range syntax".to_string(),
-                }),
+                _ => 0..u16::MAX,
             }
         }
-        None => Ok(0..u16::MAX),
+        None => 0..u16::MAX,
     }
 }
