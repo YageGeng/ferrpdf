@@ -91,7 +91,7 @@ pub fn session_builder() -> Result<SessionBuilder, FerrpdfError> {
                 use ort::execution_providers::CoreMLExecutionProvider;
                 use ort::execution_providers::coreml::*;
                 CoreMLExecutionProvider::default()
-                    .with_model_format(CoreMLModelFormat::MLProgram)
+                    .with_compute_units(CoreMLComputeUnits::CPUAndNeuralEngine)
                     .build()
             },
             #[cfg(all(feature = "cuda"))]
@@ -102,7 +102,7 @@ pub fn session_builder() -> Result<SessionBuilder, FerrpdfError> {
             CPUExecutionProvider::default().build(),
         ])
         .context(OrtInitSnafu { stage: "provider" })?
-        .with_optimization_level(GraphOptimizationLevel::Level1)
+        .with_optimization_level(GraphOptimizationLevel::Level3)
         .context(OrtInitSnafu {
             stage: "optimization",
         })?

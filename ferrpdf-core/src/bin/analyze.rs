@@ -38,7 +38,9 @@ async fn main() -> Result<(), FerrpdfError> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
-        .with_target(false)
+        .with_target(true)
+        .with_env_filter("info,ort=error")
+        .compact()
         .init();
 
     let args = Args::parse();

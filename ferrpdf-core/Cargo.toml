@@ -42,4 +42,4 @@ tar = "0.4"
 [features]
 coreml = ["ort/coreml"]
 cuda = ["ort/cuda"]
-default = []
+default = ["coreml"]
