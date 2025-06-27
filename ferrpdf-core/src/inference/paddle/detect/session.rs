@@ -240,8 +240,7 @@ impl PaddleDetSession<PaddleDet> {
             }
         }
 
-        // 5. Merge overlapping text boxes
-        self.merge_bboxes(detections)
+        detections
     }
 
     /// Extract probability maps from model prediction
@@ -673,13 +672,7 @@ impl PaddleDetSession<PaddleDet> {
         }
 
         // Sort by area (larger bboxes first) to prioritize merging into larger ones
-        detections.sort_by(|a, b| {
-            let area_a = a.bbox.area();
-            let area_b = b.bbox.area();
-            area_b
-                .partial_cmp(&area_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        detections.sort_by(|a, b| b.bbox.area().total_cmp(&a.bbox.area()));
 
         let mut merged = Vec::new();
         let mut used = vec![false; detections.len()];
@@ -997,6 +990,8 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
         extra: Self::Extra,
     ) -> Result<Self::Output, FerrpdfError> {
         let mut detections = self.db_postprocess(&output, &extra);
+        // merge
+        detections = self.merge_bboxes(detections);
         self.sort_by_reading_order(&mut detections);
         Ok(detections)
     }
