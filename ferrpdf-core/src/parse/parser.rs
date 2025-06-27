@@ -43,14 +43,12 @@ pub struct PdfParser {
 #[derive(Debug, Builder)]
 pub struct ParserConfig {
     pub auto_clean_text: bool,
-    pub coverage_threshold: f32,
 }
 
 impl Default for ParserConfig {
     fn default() -> Self {
         Self {
             auto_clean_text: true,
-            coverage_threshold: 0.002,
         }
     }
 }
@@ -181,6 +179,9 @@ impl PdfParser {
 
         let path = output.as_ref();
         for (page_no, detections) in grouped_detections.into_iter() {
+            if detections.is_empty() {
+                continue;
+            }
             let pdf_image = &images[page_no];
             debug!("draw detections-{}", pdf_image.metadata.page);
 
@@ -337,23 +338,12 @@ impl PdfParser {
                     text = fix_text(&text, None);
                 }
 
-                let text_len = text.len();
-                let area = layout.bbox.area();
-
-                // update text coverage
-                let text_coverage = text_len as f32 / area;
-
-                layout.ocr = Some(Ocr {
-                    text_coverage,
-                    is_ocr: false,
-                });
+                layout.ocr = Some(Ocr { is_ocr: false });
 
                 let is_text_empty = text.trim().is_empty();
                 layout.text = Some(text);
 
-                if (matches!(layout.label, Label::Picture) && is_text_empty)
-                    || text_coverage <= self.config.coverage_threshold
-                {
+                if matches!(layout.label, Label::Picture) || is_text_empty {
                     need_ocr_layouts.push(LackTextBlock {
                         layout: Arc::new(Mutex::new(layout)),
                         page_no: metadata.page,
@@ -424,13 +414,20 @@ impl PdfParser {
         let recognize_tasks = text_detections
             .into_iter()
             .flat_map(|(idx, page_no, detect_result)| {
-                if let Err(err) = detect_result.as_ref() {
-                    error!("Error detecting text in layout: {}", err);
-                }
-
                 detect_result
+                    .map(|detections| {
+                        // skip empty detections
+                        if detections.is_empty() {
+                            None
+                        } else {
+                            Some((idx, page_no, detections, Arc::clone(&run_options)))
+                        }
+                    })
+                    .map_err(|err| {
+                        error!("Error detecting text in layout: {}", err);
+                    })
                     .ok()
-                    .map(|detections| (idx, page_no, detections, Arc::clone(&run_options)))
+                    .flatten()
             })
             .map(|(idx, page_no, text_detections, run_options)| async move {
                 let image = &pdf_images[page_no].image;
