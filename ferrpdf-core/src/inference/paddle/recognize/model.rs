@@ -68,6 +68,15 @@ pub struct PaddleRecConfig {
     /// Typical values: 0.5 - 2.0
     /// Default: 1.5 (rotate when width > 1.5 * height)
     pub aspect_ratio_threshold: f32,
+
+    /// Probability threshold for text detection
+    ///
+    /// When the probability of a text region is below this threshold, it will be discarded.
+    /// This is useful for filtering out low-confidence detections.
+    ///
+    /// Typical values: 0.0 - 1.0
+    /// Default: 0.5
+    pub probability_threshold: f32,
 }
 
 impl Default for PaddleRecConfig {
@@ -78,6 +87,7 @@ impl Default for PaddleRecConfig {
             input_channels: 3,
             background_fill_value: 0.5,
             aspect_ratio_threshold: 1.5,
+            probability_threshold: 0.5,
         }
     }
 }

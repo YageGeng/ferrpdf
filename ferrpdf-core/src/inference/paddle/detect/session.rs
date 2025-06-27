@@ -963,7 +963,7 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
         let new_h = (orig_h as f32 * scale) as u32;
 
         // Resize image
-        let resized_img = image::imageops::resize(&img_src, new_w, new_h, FilterType::Triangle);
+        let resized_img = image::imageops::resize(&img_src, new_w, new_h, FilterType::CatmullRom);
 
         // Create input tensor with padding
         let mut input_tensor = Array4::zeros([

@@ -91,6 +91,7 @@ pub fn session_builder() -> Result<SessionBuilder, FerrpdfError> {
                 use ort::execution_providers::CoreMLExecutionProvider;
                 use ort::execution_providers::coreml::*;
                 CoreMLExecutionProvider::default()
+                    .with_model_format(CoreMLModelFormat::MLProgram)
                     .with_compute_units(CoreMLComputeUnits::CPUAndNeuralEngine)
                     .build()
             },

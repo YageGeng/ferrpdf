@@ -84,7 +84,7 @@ impl OnnxSession<Yolov12> for YoloSession<Yolov12> {
         );
 
         // Resize image to calculated dimensions
-        let resized_img = image.resize_exact(w_new as u32, h_new as u32, FilterType::Triangle);
+        let resized_img = image.resize_exact(w_new as u32, h_new as u32, FilterType::CatmullRom);
 
         // Create tensor with background fill value
         let mut input_tensor = Array4::ones([

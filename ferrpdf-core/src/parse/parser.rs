@@ -411,8 +411,9 @@ impl PdfParser {
             })
             .collect::<Vec<_>>();
 
-        info!("Completed text detection tasks.");
+        info!("Start text detection tasks.");
         let text_detections = future::join_all(detect_tasks).in_current_span().await;
+        info!("Completed text detection tasks.");
 
         if let Some(path) = pdf.debug.as_ref() {
             info!("Drawing detection bounding boxes for debugging.");
@@ -455,7 +456,7 @@ impl PdfParser {
             })
             .collect::<Vec<_>>();
 
-        info!("Completed text recognition tasks.");
+        info!("Start text recognition tasks.");
         for (idx, recognition) in future::join_all(recognize_tasks)
             .in_current_span()
             .await
@@ -482,6 +483,7 @@ impl PdfParser {
                 ocr.is_ocr = true;
             }
         }
+        info!("Completed text recognition tasks.");
 
         Ok(())
     }

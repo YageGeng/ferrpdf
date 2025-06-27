@@ -147,10 +147,6 @@ def convert_model_to_onnx(model_path, output_name=None, output_dir="models"):
 def move_and_cleanup_modelscope_files(det_path, rec_path, models_dir):
     """Move downloaded files to models directory and cleanup temporary directories"""
     try:
-        # Get the base directory where ModelScope downloaded the files
-        det_dir = os.path.dirname(det_path)
-        rec_dir = os.path.dirname(rec_path)
-
         # Extract filenames
         det_filename = os.path.basename(det_path)
         rec_filename = os.path.basename(rec_path)

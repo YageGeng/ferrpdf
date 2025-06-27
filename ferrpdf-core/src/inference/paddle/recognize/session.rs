@@ -162,8 +162,12 @@ impl OnnxSession<PaddleRec> for PaddleRecSession<PaddleRec> {
             &img_src,
             dst_width,
             config.required_height as u32,
-            FilterType::Triangle,
+            FilterType::CatmullRom,
         );
+
+        // src_resize
+        //     .save(format!("images/{}.png", uuid::Uuid::new_v4()))
+        //     .ok();
 
         // Create input tensor with shape [batch_size, channels, height, width]
         let mut input_tensor = Array4::zeros([
@@ -208,14 +212,15 @@ impl OnnxSession<PaddleRec> for PaddleRecSession<PaddleRec> {
 
         for timestep in batch_output.axis_iter(Axis(0)) {
             // Find the character with highest probability
-            let (max_idx, _max_prob) = timestep
-                .iter()
+            let max_idx = timestep
+                .into_iter()
                 .enumerate()
-                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap_or((0, &0.0));
+                .max_by(|(_, a), (_, b)| a.total_cmp(b))
+                .filter(|(_, max_prob)| **max_prob > self.model.config().probability_threshold)
+                .map(|(max_proba_idx, _)| max_proba_idx)
+                .unwrap_or(0);
 
             // Skip blank token (usually index 0) and repeated characters (CTC decoding)
-            //
             if max_idx != 0 && Some(max_idx) != prev_char_idx && max_idx < self.character_dict.len()
             {
                 // Subtract 1 because index 0 is blank token
