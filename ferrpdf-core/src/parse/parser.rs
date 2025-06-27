@@ -454,8 +454,6 @@ impl PdfParser {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_control_chars() {
         // STX
@@ -478,17 +476,5 @@ mod tests {
         // \t
         assert!('\t'.is_whitespace());
         assert!('\t'.is_control());
-    }
-
-    #[tokio::test]
-    async fn test_parse() -> Result<(), FerrpdfError> {
-        let parser = PdfParser::new().unwrap();
-        let pdf = Pdf{path:"/home/isbest/Downloads/Docs/DocBank: A Benchmark Dataset for Document Layout Analysis.pdf".into(),
-            uuid: Uuid::new_v4(),
-            password:None,range:0..1, debug: None };
-
-        let _ = parser.parse(&pdf).await;
-
-        Ok(())
     }
 }
