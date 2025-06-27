@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ops::{Deref, Range},
     path::{Path, PathBuf},
     sync::Arc,
@@ -74,6 +75,7 @@ pub struct LackTextBlock<'a> {
 }
 
 impl PdfParser {
+    #[tracing::instrument(skip_all)]
     pub fn new() -> Result<Self, FerrpdfError> {
         // Get pdfium library path
         info!("Fetching PDFium library path from environment variable.");
@@ -108,6 +110,7 @@ impl PdfParser {
         })
     }
 
+    #[tracing::instrument(skip_all,fields(pdf = %pdf.uuid))]
     pub async fn parse(&self, pdf: &Pdf) -> Result<Vec<PdfLayouts>, FerrpdfError> {
         info!("Loading PDF document.");
         let document = self.load_pdf(pdf)?;
@@ -134,6 +137,7 @@ impl PdfParser {
         Ok(layouts)
     }
 
+    #[tracing::instrument(skip_all)]
     fn draw_layout_bbox<P: AsRef<Path>>(
         output: P,
         layout: &[PdfLayouts],
@@ -141,6 +145,7 @@ impl PdfParser {
     ) -> Result<(), FerrpdfError> {
         let path = output.as_ref();
         for (idx, PdfLayouts { layouts, metadata }) in layout.iter().enumerate() {
+            debug!("layout-{}.png", metadata.page);
             YoloSession::draw(
                 path.join(format!("layout-{}.png", metadata.page)),
                 metadata,
@@ -151,34 +156,46 @@ impl PdfParser {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all)]
     #[allow(clippy::type_complexity)]
     fn draw_detection_bbox<P: AsRef<Path>>(
         output: P,
         layout: &[(usize, usize, Result<Vec<TextDetection>, FerrpdfError>)],
         images: &[PdfPage],
     ) -> Result<(), FerrpdfError> {
+        let grouped_detections = layout
+            .iter()
+            .filter_map(|(_, page_no, detections_result)| {
+                detections_result
+                    .as_ref()
+                    .ok()
+                    .map(|detections| (*page_no, detections.clone()))
+            })
+            .fold(
+                HashMap::new(),
+                |mut acc: HashMap<usize, Vec<TextDetection>>, (page_no, detections)| {
+                    acc.entry(page_no).or_default().extend(detections);
+                    acc
+                },
+            );
+
         let path = output.as_ref();
-        for (idx, page_no, detections) in layout.iter().flat_map(|(idx, page_no, result)| {
-            result
-                .as_ref()
-                .ok()
-                .map(|detections| (idx, page_no, detections))
-        }) {
-            let pdf_image = &images[*page_no];
+        for (page_no, detections) in grouped_detections.into_iter() {
+            let pdf_image = &images[page_no];
+            debug!("draw detections-{}", pdf_image.metadata.page);
 
             PaddleDetSession::draw(
-                path.join(format!(
-                    "detections-{}-{}.png",
-                    pdf_image.metadata.page, idx
-                )),
-                detections,
+                path.join(format!("detections-{}.png", pdf_image.metadata.page,)),
+                &detections,
                 &pdf_image.image,
             )?;
         }
+
         Ok(())
     }
 
     // load pdf
+    #[tracing::instrument(skip_all, fields(result))]
     fn load_pdf<'a, 'b: 'a>(&'a self, pdf: &'b Pdf) -> Result<PdfDocument<'a>, FerrpdfError> {
         info!("Loading PDF from file: {:?}", pdf.path);
         let document = self
@@ -207,6 +224,7 @@ impl PdfParser {
     }
 
     // render pdf to jpeg
+    #[tracing::instrument(skip_all, fields(result))]
     fn render(
         &self,
         document: &PdfDocument<'_>,
@@ -253,6 +271,7 @@ impl PdfParser {
         Ok(pdf_images)
     }
 
+    #[tracing::instrument(skip_all, fields(result))]
     async fn layout_analyze(
         &self,
         pdf_images: &[PdfPage],
@@ -267,11 +286,15 @@ impl PdfParser {
 
         let layout_tasks = pdf_images
             .iter()
-            .map(|pdf_page| async {
-                let mut layout = layout.lock().await;
-                layout
-                    .run_async(&pdf_page.image, pdf_page.metadata, &run_option)
-                    .await
+            .map(|pdf_page| {
+                async {
+                    let mut layout = layout.lock().await;
+                    layout
+                        .run_async(&pdf_page.image, pdf_page.metadata, &run_option)
+                        .in_current_span()
+                        .await
+                }
+                .in_current_span()
             })
             .collect::<Vec<_>>();
 
@@ -289,6 +312,7 @@ impl PdfParser {
         Ok(result)
     }
 
+    #[tracing::instrument(skip_all, fields(result))]
     fn extra_pdf_text<'a>(
         &self,
         document: &PdfDocument<'_>,
@@ -324,9 +348,10 @@ impl PdfParser {
                     is_ocr: false,
                 });
 
+                let is_text_empty = text.trim().is_empty();
                 layout.text = Some(text);
 
-                if matches!(layout.label, Label::Picture)
+                if (matches!(layout.label, Label::Picture) && is_text_empty)
                     || text_coverage <= self.config.coverage_threshold
                 {
                     need_ocr_layouts.push(LackTextBlock {
@@ -345,6 +370,7 @@ impl PdfParser {
         Ok(need_ocr_layouts)
     }
 
+    #[tracing::instrument(skip_all, fields(result))]
     async fn detect_and_ocr(
         &self,
         lack_text_blocks: &[LackTextBlock<'_>],
@@ -379,13 +405,14 @@ impl PdfParser {
                         lack_block.scale,
                         &run_options,
                     )
+                    .instrument(info_span!("detect"))
                     .await;
                 (idx, page_no, detections)
             })
             .collect::<Vec<_>>();
 
         info!("Completed text detection tasks.");
-        let text_detections = future::join_all(detect_tasks).await;
+        let text_detections = future::join_all(detect_tasks).in_current_span().await;
 
         if let Some(path) = pdf.debug.as_ref() {
             info!("Drawing detection bounding boxes for debugging.");
@@ -417,15 +444,23 @@ impl PdfParser {
                         let mut ocr_session = self.recognizer.lock().await;
                         ocr_session
                             .recognize_text_region_async(&image, text_detection.bbox, &run_options)
+                            .instrument(info_span!("recognize"))
                             .await
                     })
                     .collect::<Vec<_>>();
-                (idx, future::join_all(recognize_tasks).await)
+                (
+                    idx,
+                    future::join_all(recognize_tasks).in_current_span().await,
+                )
             })
             .collect::<Vec<_>>();
 
         info!("Completed text recognition tasks.");
-        for (idx, recognition) in future::join_all(recognize_tasks).await.into_iter() {
+        for (idx, recognition) in future::join_all(recognize_tasks)
+            .in_current_span()
+            .await
+            .into_iter()
+        {
             let mut text =
                 recognition
                     .into_iter()

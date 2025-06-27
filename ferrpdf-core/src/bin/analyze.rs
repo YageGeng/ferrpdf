@@ -37,9 +37,10 @@ struct Args {
 async fn main() -> Result<(), FerrpdfError> {
     // Initialize logging
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_target(true)
-        .with_env_filter("info,ort=error")
+        .with_max_level(tracing::Level::DEBUG)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_env_filter("debug,ort=error")
         .compact()
         .init();
 

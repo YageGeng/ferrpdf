@@ -21,6 +21,8 @@ pub struct PaddleRecSession<M: Model> {
 
 impl PaddleRecSession<PaddleRec> {
     pub fn new(session: SessionBuilder, model: PaddleRec) -> Result<Self, FerrpdfError> {
+        let span = tracing::info_span!("init-paddle-recognize-session");
+        let _guard = span.enter();
         let session = session
             .commit_from_memory(model.load())
             .context(OrtInitSnafu { stage: "commit" })?;

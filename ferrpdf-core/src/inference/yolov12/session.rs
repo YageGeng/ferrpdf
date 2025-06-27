@@ -50,6 +50,8 @@ pub struct PdfLayouts {
 
 impl YoloSession<Yolov12> {
     pub fn new(session: SessionBuilder, model: Yolov12) -> Result<Self, FerrpdfError> {
+        let span = tracing::info_span!("init-yolosession");
+        let _guard = span.enter();
         let session = session
             .commit_from_memory(model.load())
             .context(OrtInitSnafu { stage: "commit" })?;
@@ -336,6 +338,7 @@ impl YoloSession<Yolov12> {
         (current_bbox, max_proba)
     }
 
+    #[tracing::instrument(skip_all)]
     pub fn draw<P: AsRef<Path>>(
         output: P,
         extra: &DocMeta,

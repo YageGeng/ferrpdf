@@ -46,6 +46,8 @@ pub struct DetExtra {
 
 impl PaddleDetSession<PaddleDet> {
     pub fn new(session: SessionBuilder, model: PaddleDet) -> Result<Self, FerrpdfError> {
+        let span = tracing::info_span!("init-paddle-detect-session");
+        let _guard = span.enter();
         let session = session
             .commit_from_memory(model.load())
             .context(OrtInitSnafu { stage: "commit" })?;
@@ -870,6 +872,7 @@ impl PaddleDetSession<PaddleDet> {
         (current_bbox, max_proba)
     }
 
+    #[tracing::instrument(skip_all)]
     pub fn draw<P: AsRef<Path>>(
         output: P,
         detections: &[TextDetection],
@@ -910,22 +913,27 @@ impl PaddleDetSession<PaddleDet> {
 
     /// Sorts text detections by reading order: top-to-bottom, left-to-right for same-line elements
     pub fn sort_by_reading_order(&self, detections: &mut [TextDetection]) {
+        if detections.len() < 2 {
+            return;
+        }
+
         let config = self.model.config();
         let y_tolerance_threshold = config.y_tolerance_threshold;
 
-        detections.sort_by(|a, b| {
+        // fix: user-provided comparison function does not correctly implement a total order
+        detections.sort_unstable_by(|a, b| {
             let a_center = a.bbox.center();
             let b_center = b.bbox.center();
-            let y_diff = a_center.y - b_center.y;
-            if y_diff.abs() <= y_tolerance_threshold {
-                a_center
-                    .x
-                    .partial_cmp(&b_center.x)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            } else {
-                y_diff
-                    .partial_cmp(&0.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+
+            let y_category_a = (a_center.y / y_tolerance_threshold).floor() as i32;
+            let y_category_b = (b_center.y / y_tolerance_threshold).floor() as i32;
+
+            match y_category_a.cmp(&y_category_b) {
+                std::cmp::Ordering::Equal => match a_center.x.partial_cmp(&b_center.x) {
+                    Some(ordering) => ordering,
+                    None => std::cmp::Ordering::Equal,
+                },
+                ordering => ordering,
             }
         });
     }
