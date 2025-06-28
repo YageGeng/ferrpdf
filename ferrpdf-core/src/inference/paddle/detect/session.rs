@@ -456,47 +456,43 @@ impl PaddleDetSession<PaddleDet> {
         if count > 0 { sum / count as f32 } else { 0.0 }
     }
 
-    fn merge_bboxes(&self, detections: &mut Vec<TextDetection>) {
-        let len = detections.len();
-        if len < 2 {
-            return;
-        }
-
+    fn merge_bboxes(&self, mut detections: Vec<Vec<TextDetection>>) -> Vec<TextDetection> {
         let config = self.model.config();
-        let y_threshold = config.y_tolerance_threshold;
         let x_threshold = config.x_merge_threshold;
 
-        let mut removed = vec![false; len];
-        for i in 0..len {
-            if removed[i] {
+        for line in detections.iter_mut() {
+            let len = line.len();
+            if len < 2 {
                 continue;
             }
 
-            let mut new_bbox = detections[i].bbox;
-            let current_y = new_bbox.center_y();
-
-            for j in (i + 1)..len {
-                let next_bbox = detections[j].bbox;
-                // not one line
-                if (next_bbox.center_y() - current_y).abs() > y_threshold {
-                    break;
+            let mut removed = vec![false; len];
+            let mut new_bbox = line[0].bbox;
+            for i in 0..line.len() {
+                if removed[i] {
+                    continue;
                 }
 
-                if next_bbox.min.x - new_bbox.max.x < x_threshold {
-                    new_bbox = new_bbox.union(&next_bbox);
-                    removed[j] = true;
+                for j in (i + 1)..len {
+                    let next_bbox = line[j].bbox;
+                    if next_bbox.min.x - new_bbox.max.x < x_threshold {
+                        removed[j] = true;
+                        new_bbox = new_bbox.union(&next_bbox);
+                    }
                 }
+
+                line[i].bbox = new_bbox;
             }
 
-            detections[i].bbox = new_bbox;
+            let mut index = 0;
+            line.retain(|_| {
+                let result = !removed[index];
+                index += 1;
+                result
+            });
         }
 
-        let mut index = 0;
-        detections.retain(|_| {
-            let result = !removed[index];
-            index += 1;
-            result
-        });
+        detections.into_iter().flatten().collect::<Vec<_>>()
     }
 
     #[tracing::instrument(skip_all)]
@@ -539,24 +535,22 @@ impl PaddleDetSession<PaddleDet> {
     }
 
     /// Sorts text detections by reading order: top-to-bottom, left-to-right for same-line elements
-    pub fn sort_by_reading_order(&self, detections: &mut [TextDetection]) {
-        if detections.len() < 2 {
-            return;
-        }
-
+    pub fn sort_by_lines(&self, detections: &[TextDetection]) -> Vec<Vec<TextDetection>> {
         let config = self.model.config();
         let y_tolerance_threshold = config.y_tolerance_threshold;
 
-        detections.sort_unstable_by(|a, b| {
-            let a_center = a.bbox.center();
-            let b_center = b.bbox.center();
-
-            if (a_center.y - b_center.y).abs() < y_tolerance_threshold {
-                a_center.x.total_cmp(&b_center.x)
-            } else {
-                a_center.y.total_cmp(&b_center.y)
-            }
-        });
+        detections
+            .chunk_by(|a, b| {
+                let a_center = a.bbox.center();
+                let b_center = b.bbox.center();
+                (a_center.y - b_center.y).abs() < y_tolerance_threshold
+            })
+            .map(|line| {
+                let mut line = line.to_vec();
+                line.sort_by(|a, b| a.bbox.center_x().total_cmp(&b.bbox.center_x()));
+                line
+            })
+            .collect::<Vec<_>>()
     }
 }
 
@@ -618,11 +612,11 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
         extra: Self::Extra,
     ) -> Result<Self::Output, FerrpdfError> {
         // extra bbox
-        let mut detections = self.extra_bbox(&output, &extra);
+        let detections = self.extra_bbox(&output, &extra);
         // sort bbox
-        self.sort_by_reading_order(&mut detections);
+        let lines = self.sort_by_lines(&detections);
         // merge bbox
-        self.merge_bboxes(&mut detections);
+        let detections = self.merge_bboxes(lines);
         Ok(detections)
     }
 
@@ -969,52 +963,5 @@ mod tests {
         assert!((bbox.max.y - expected_max_y).abs() < 0.1);
 
         Ok(())
-    }
-
-    #[test]
-    fn test_y_tolerance_threshold_config() {
-        use crate::inference::paddle::detect::model::PaddleDetConfig;
-        use glam::Vec2;
-
-        // Test default value
-        let config = PaddleDetConfig::default();
-        assert_eq!(config.y_tolerance_threshold, 5.0);
-
-        // Test custom value
-        let paddle_det_config = PaddleDetConfig {
-            y_tolerance_threshold: 10.0,
-            ..Default::default()
-        };
-        assert_eq!(paddle_det_config.y_tolerance_threshold, 10.0);
-
-        // Test that the session uses the config value
-        let model = PaddleDet::with_config(paddle_det_config);
-        let session = PaddleDetSession::new(SessionBuilder::new().unwrap(), model).unwrap();
-
-        // Create test detections with different y-coordinates
-        let mut detections = vec![
-            TextDetection {
-                bbox: Bbox::new(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0)),
-                proba: 0.9,
-            },
-            TextDetection {
-                bbox: Bbox::new(Vec2::new(20.0, 5.0), Vec2::new(30.0, 15.0)), // y_diff = 5
-                proba: 0.8,
-            },
-            TextDetection {
-                bbox: Bbox::new(Vec2::new(40.0, 15.0), Vec2::new(50.0, 25.0)), // y_diff = 10
-                proba: 0.7,
-            },
-        ];
-
-        // Sort by reading order
-        session.sort_by_reading_order(&mut detections);
-
-        // Verify sorting behavior based on y_tolerance_threshold
-        // With threshold = 10.0, the first two should be considered on same line
-        // and sorted by x-coordinate, while the third should be below
-        assert_eq!(detections[0].bbox.center().x, 5.0); // First bbox (x=5)
-        assert_eq!(detections[1].bbox.center().x, 25.0); // Second bbox (x=25)
-        assert_eq!(detections[2].bbox.center().x, 45.0); // Third bbox (x=45)
     }
 }

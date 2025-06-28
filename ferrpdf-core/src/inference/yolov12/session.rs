@@ -253,87 +253,47 @@ impl YoloSession<Yolov12> {
     }
 
     fn nms(&self, raw_layouts: &mut Vec<Layout>) {
-        if raw_layouts.is_empty() || raw_layouts.len() == 1 {
+        let len = raw_layouts.len();
+        if len < 2 {
             return;
         }
 
         // Sort layouts by area (larger bboxes first) to prioritize merging into larger ones
-        raw_layouts.sort_by(|a, b| {
-            let area_a = (a.bbox.max.x - a.bbox.min.x) * (a.bbox.max.y - a.bbox.min.y);
-            let area_b = (b.bbox.max.x - b.bbox.min.x) * (b.bbox.max.y - b.bbox.min.y);
-            area_b.total_cmp(&area_a)
-        });
+        raw_layouts.sort_by(|a, b| b.bbox.area().total_cmp(&a.bbox.area()));
 
-        let mut merged = Vec::new();
-        let mut used = vec![false; raw_layouts.len()];
+        let mut removed = vec![false; raw_layouts.len()];
 
+        let iou_threshold = self.model.config().iou_threshold;
         // Process each layout starting from the largest
-        for (i, layout) in raw_layouts.iter().enumerate() {
-            if used[i] {
+        for i in 0..len {
+            if removed[i] {
                 continue;
             }
 
-            // Try to merge current bbox with all other unused bboxes
-            let (merged_bbox, max_proba) = self.merge_layout_with_all_overlapping(
-                raw_layouts,
-                i,
-                &mut used,
-                self.model.config().iou_threshold,
-            );
+            let mut new_bbox = raw_layouts[i].bbox;
+            let mut new_label = raw_layouts[i].label;
+            for j in (i + 1)..len {
+                let next_layout = &raw_layouts[j];
 
-            // Create merged layout
-            let mut merged_layout = layout.clone();
-            merged_layout.bbox = merged_bbox;
-            merged_layout.proba = max_proba;
-            merged.push(merged_layout);
-        }
-
-        // Replace original layouts with merged ones
-        *raw_layouts = merged;
-    }
-
-    /// Merge a layout with all overlapping layouts (not just active ones)
-    fn merge_layout_with_all_overlapping(
-        &self,
-        layouts: &[Layout],
-        start_idx: usize,
-        used: &mut [bool],
-        overlap_threshold: f32,
-    ) -> (Bbox, f32) {
-        let mut current_bbox = layouts[start_idx].bbox;
-        let mut max_proba = layouts[start_idx].proba;
-        used[start_idx] = true;
-
-        // Keep merging until no more overlaps are found
-        let mut changed = true;
-        while changed {
-            changed = false;
-
-            // Check all unused layouts for overlaps
-            for (j, other) in layouts.iter().enumerate() {
-                if used[j] {
-                    continue;
-                }
-
-                let overlap_ratio = current_bbox.overlap_ratio(&other.bbox);
-
-                // Also check if the other bbox is mostly contained within current bbox
-                let other_area =
-                    (other.bbox.max.x - other.bbox.min.x) * (other.bbox.max.y - other.bbox.min.y);
-                let intersection_area = current_bbox.intersection(&other.bbox);
-                let containment_ratio = intersection_area / other_area;
-
-                if overlap_ratio >= overlap_threshold || containment_ratio >= 0.5 {
-                    // Merge with this layout
-                    current_bbox = current_bbox.union(&other.bbox);
-                    max_proba = max_proba.max(other.proba);
-                    used[j] = true;
-                    changed = true;
+                if new_bbox.overlap_ratio(&next_layout.bbox) > iou_threshold {
+                    new_bbox = new_bbox.union(&next_layout.bbox);
+                    if next_layout.proba > raw_layouts[i].proba {
+                        new_label = next_layout.label;
+                    }
+                    removed[j] = true;
                 }
             }
+
+            raw_layouts[i].bbox = new_bbox;
+            raw_layouts[i].label = new_label;
         }
 
-        (current_bbox, max_proba)
+        let mut idx = 0;
+        raw_layouts.retain(|_| {
+            let result = !removed[idx];
+            idx += 1;
+            result
+        });
     }
 
     #[tracing::instrument(skip_all)]
