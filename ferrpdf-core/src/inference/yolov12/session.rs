@@ -215,7 +215,7 @@ impl YoloSession<Yolov12> {
             let (max_prob_idx, &proba) = labels
                 .iter()
                 .enumerate()
-                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .max_by(|(_, a), (_, b)| a.total_cmp(b))
                 .unwrap();
 
             // Skip detections below confidence threshold
@@ -261,9 +261,7 @@ impl YoloSession<Yolov12> {
         raw_layouts.sort_by(|a, b| {
             let area_a = (a.bbox.max.x - a.bbox.min.x) * (a.bbox.max.y - a.bbox.min.y);
             let area_b = (b.bbox.max.x - b.bbox.min.x) * (b.bbox.max.y - b.bbox.min.y);
-            area_b
-                .partial_cmp(&area_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            area_b.total_cmp(&area_a)
         });
 
         let mut merged = Vec::new();
@@ -427,7 +425,7 @@ impl YoloSession<Yolov12> {
 
         // Get all center X coordinates
         let mut x_centers: Vec<f32> = layouts.iter().map(|l| l.bbox.center().x).collect();
-        x_centers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        x_centers.sort_by(|a, b| a.total_cmp(b));
 
         // Find the overall X range
         let min_x = x_centers[0];
@@ -510,12 +508,9 @@ impl YoloSession<Yolov12> {
 
             match (&a.label, &b.label) {
                 // PageHeader vs PageHeader: compare Y coordinates
-                (Label::PageHeader, Label::PageHeader) => a
-                    .bbox
-                    .center()
-                    .y
-                    .partial_cmp(&b.bbox.center().y)
-                    .unwrap_or(std::cmp::Ordering::Equal),
+                (Label::PageHeader, Label::PageHeader) => {
+                    a.bbox.center().y.total_cmp(&b.bbox.center().y)
+                }
 
                 // PageHeader vs Title: PageHeader always comes first
                 (Label::PageHeader, Label::Title) => std::cmp::Ordering::Less,
@@ -527,12 +522,7 @@ impl YoloSession<Yolov12> {
                 (Label::Title, Label::PageHeader) => std::cmp::Ordering::Greater,
 
                 // Title vs Title: compare Y coordinates
-                (Label::Title, Label::Title) => a
-                    .bbox
-                    .center()
-                    .y
-                    .partial_cmp(&b.bbox.center().y)
-                    .unwrap_or(std::cmp::Ordering::Equal),
+                (Label::Title, Label::Title) => a.bbox.center().y.total_cmp(&b.bbox.center().y),
 
                 // Title vs PageFooter: Title comes before PageFooter
                 (Label::Title, Label::PageFooter) => std::cmp::Ordering::Less,
@@ -546,12 +536,9 @@ impl YoloSession<Yolov12> {
                 }
 
                 // PageFooter vs PageFooter: compare Y coordinates
-                (Label::PageFooter, Label::PageFooter) => a
-                    .bbox
-                    .center()
-                    .y
-                    .partial_cmp(&b.bbox.center().y)
-                    .unwrap_or(std::cmp::Ordering::Equal),
+                (Label::PageFooter, Label::PageFooter) => {
+                    a.bbox.center().y.total_cmp(&b.bbox.center().y)
+                }
 
                 // PageFooter vs others: PageFooter always comes last
                 (Label::PageFooter, _) => std::cmp::Ordering::Greater,
@@ -572,15 +559,10 @@ impl YoloSession<Yolov12> {
 
                     if y_diff.abs() <= self.model.config().y_tolerance_threshold {
                         // Elements are on roughly the same line, sort by X coordinate (left to right)
-                        a_center
-                            .x
-                            .partial_cmp(&b_center.x)
-                            .unwrap_or(std::cmp::Ordering::Equal)
+                        a_center.x.total_cmp(&b_center.x)
                     } else {
                         // Different lines, sort by Y coordinate
-                        y_diff
-                            .partial_cmp(&0.0)
-                            .unwrap_or(std::cmp::Ordering::Equal)
+                        y_diff.total_cmp(&0.0)
                     }
                 }
             }
