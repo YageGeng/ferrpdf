@@ -17,7 +17,7 @@ glam = { version = "0.30", features = ["serde"] }
 image = "0.25"
 imageproc = "0.25"
 ndarray = "0.16"
-ort = { version = "=2.0.0-rc.10" }
+ort = { version = "=2.0.0-rc.10", features = ["tensorrt"] }
 pdfium-render = { version = "=0.8.27", features = ["bindings", "sync"] }
 plsfix = "0.1"
 rayon = "1"

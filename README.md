@@ -55,6 +55,12 @@ The tool can detect and classify the following document elements:
 
 3. **ONNX Runtime**: Required for model inference (automatically handled by dependencies)
 
+4. **Arch Linux CUDA Requirements**: If enabling CUDA features on Arch Linux, ensure the following packages are installed:
+   - `onnxruntime`
+   - `cuda`
+   - `cudnn`
+   - `nccl`
+
 ### Build
 
 ```bash
