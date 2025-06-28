@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use ferrpdf_core::{
     error::FerrpdfError,
-    parse::parser::{Pdf, PdfParser},
+    parse::parser::{Pdf, PdfParser, TextExtraMode},
 };
 use uuid::Uuid;
 
@@ -31,6 +31,14 @@ struct Args {
         help = "Enable debug mode to save debug images"
     )]
     debug: bool,
+
+    #[arg(
+        long,
+        short('m'),
+        default_value = "auto",
+        help = "Specify text extraction mode: 'Auto' prefers PDF parsing and falls back to OCR, 'ocr' uses OCR exclusively, 'pdf' uses PDF parsing exclusively."
+    )]
+    extra_mode: TextExtraMode,
 }
 
 #[tokio::main]
@@ -59,6 +67,7 @@ async fn main() -> Result<(), FerrpdfError> {
         path: PathBuf::from(args.input),
         uuid: Uuid::new_v4(),
         password: None,
+        text_extra_mode: args.extra_mode,
         range,
         debug,
     };

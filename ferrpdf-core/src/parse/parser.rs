@@ -45,6 +45,27 @@ pub struct ParserConfig {
     pub auto_clean_text: bool,
 }
 
+#[derive(clap::ValueEnum, Debug, Default, Clone, Copy)]
+pub enum TextExtraMode {
+    #[default]
+    /// Prefer PDF parsing, fallback to OCR if PDF parsing fails.
+    Auto,
+    /// Use OCR exclusively for text extraction.
+    Ocr,
+    /// Use PDF parsing exclusively for text extraction.
+    Pdf,
+}
+
+impl TextExtraMode {
+    pub fn need_ocr(&self) -> bool {
+        matches!(self, TextExtraMode::Ocr | TextExtraMode::Auto)
+    }
+
+    pub fn need_pdf(&self) -> bool {
+        matches!(self, TextExtraMode::Pdf | TextExtraMode::Auto)
+    }
+}
+
 impl Default for ParserConfig {
     fn default() -> Self {
         Self {
@@ -59,6 +80,7 @@ pub struct Pdf {
     pub range: Range<u16>,
     pub debug: Option<PathBuf>,
     pub uuid: Uuid,
+    pub text_extra_mode: TextExtraMode,
 }
 
 pub struct PdfPage {
@@ -125,7 +147,7 @@ impl PdfParser {
         }
 
         info!("Extracting text from PDF document.");
-        let lack_text_block = self.extra_pdf_text(&document, &mut layouts)?;
+        let lack_text_block = self.extra_pdf_text(&document, &mut layouts, pdf.text_extra_mode)?;
         if !lack_text_block.is_empty() {
             info!("Performing text detection and OCR on missing text blocks.");
             self.detect_and_ocr(&lack_text_block, &pdf_images, pdf)
@@ -318,32 +340,49 @@ impl PdfParser {
         &self,
         document: &PdfDocument<'_>,
         layouts: &'a mut [PdfLayouts],
+        extra_mode: TextExtraMode,
     ) -> Result<Vec<LackTextBlock<'a>>, FerrpdfError> {
         info!("Identifying layouts requiring OCR.");
         let mut need_ocr_layouts = Vec::new();
         for pdf_layouts in layouts.iter_mut() {
             let metadata = pdf_layouts.metadata;
-            info!("Fetching page {} from PDF document.", metadata.page);
-            let page = document
-                .pages()
-                .get(metadata.page as u16)
-                .context(PdfiumSnafu { stage: "get-page" })?;
+            let page = if extra_mode.need_pdf() {
+                info!("Fetching page {} from PDF document.", metadata.page);
+                let page = document
+                    .pages()
+                    .get(metadata.page as u16)
+                    .context(PdfiumSnafu { stage: "get-page" })?;
+                Some(page)
+            } else {
+                None
+            };
 
             for layout in pdf_layouts.layouts.iter_mut() {
-                let page_text = page.text().context(PdfiumSnafu { stage: "text" })?;
-                let pdf_bbox = layout.bbox.to_pdf_rect(metadata.pdf_size.y);
-                let mut text = page_text.inside_rect(pdf_bbox);
+                let pdf_text = if extra_mode.need_pdf() {
+                    let page_text = page
+                        .as_ref()
+                        .unwrap()
+                        .text()
+                        .context(PdfiumSnafu { stage: "text" })?;
+                    let pdf_bbox = layout.bbox.to_pdf_rect(metadata.pdf_size.y);
+                    let mut text = page_text.inside_rect(pdf_bbox);
 
-                if self.config.auto_clean_text {
-                    text = fix_text(&text, None);
-                }
+                    if self.config.auto_clean_text {
+                        text = fix_text(&text, None);
+                    }
+                    Some(text)
+                } else {
+                    None
+                };
 
                 layout.ocr = Some(Ocr { is_ocr: false });
 
-                let is_text_empty = text.trim().is_empty();
-                layout.text = Some(text);
+                let is_text_empty = pdf_text.as_ref().is_none_or(|text| text.is_empty());
+                layout.text = pdf_text;
 
-                if matches!(layout.label, Label::Picture) || is_text_empty {
+                if extra_mode.need_ocr()
+                    && (matches!(layout.label, Label::Picture) || is_text_empty)
+                {
                     need_ocr_layouts.push(LackTextBlock {
                         layout: Arc::new(Mutex::new(layout)),
                         page_no: metadata.page,
