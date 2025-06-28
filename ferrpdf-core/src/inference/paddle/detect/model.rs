@@ -118,8 +118,8 @@ pub struct PaddleDetConfig {
     /// Default: 10.0
     pub y_tolerance_threshold: f32,
     /// Represents the maximum difference in x-values for elements to be considered for merging.
-    /// Typical range: 5.0 - 20.0
-    /// Default: 15.0
+    /// Typical range: 0.0 - 15.0
+    /// Default: 10.0
     pub x_merge_threshold: f32,
 }
 

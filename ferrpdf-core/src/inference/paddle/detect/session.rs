@@ -467,12 +467,12 @@ impl PaddleDetSession<PaddleDet> {
             }
 
             let mut removed = vec![false; len];
-            let mut new_bbox = line[0].bbox;
             for i in 0..line.len() {
                 if removed[i] {
                     continue;
                 }
 
+                let mut new_bbox = line[i].bbox;
                 for j in (i + 1)..len {
                     let next_bbox = line[j].bbox;
                     if next_bbox.min.x - new_bbox.max.x < x_threshold {
@@ -616,8 +616,7 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
         // sort bbox
         let lines = self.sort_by_lines(&detections);
         // merge bbox
-        let detections = self.merge_bboxes(lines);
-        Ok(detections)
+        Ok(self.merge_bboxes(lines))
     }
 
     fn infer(
