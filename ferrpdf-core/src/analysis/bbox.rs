@@ -114,6 +114,24 @@ impl Bbox {
         (self.min + self.max) / 2.0
     }
 
+    /// Returns the y-coordinate of the center of the bounding box.
+    /// This is calculated by finding the center point of the box and extracting its y value.
+    /// Returns the x-coordinate of the center of the bounding box.
+    /// This is calculated by finding the center point of the box and extracting its x value.
+    #[inline(always)]
+    pub fn center_x(&self) -> f32 {
+        self.center().x
+    }
+
+    /// Returns the x-coordinate of the center of the bounding box.
+    /// This is calculated by taking the x value of the center point.
+    /// Returns the y-coordinate of the center of the bounding box.
+    /// This is calculated by taking the y value of the center point.
+    #[inline(always)]
+    pub fn center_y(&self) -> f32 {
+        self.center().y
+    }
+
     /// Calculates the area of intersection between this bounding box and another.
     ///
     /// This method computes the overlapping area between two axis-aligned bounding boxes.

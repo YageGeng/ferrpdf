@@ -100,23 +100,6 @@ pub struct PaddleDetConfig {
     /// Default: 6.0
     pub text_padding: f32,
 
-    /// Overlap ratio threshold for merging text boxes (0.0 to 1.0)
-    ///
-    /// When merging text boxes, this threshold controls the minimum overlap ratio
-    /// required between two text boxes to be merged into one.
-    ///
-    /// Overlap ratio = intersection_area / min(area1, area2)
-    /// This is more lenient than IoU and better for detecting containment relationships.
-    ///
-    /// - Higher values (e.g., 0.8): Only merge very similar/overlapping boxes
-    /// - Lower values (e.g., 0.3): Merge more loosely related boxes
-    ///
-    /// This is used to merge text boxes that are likely part of the same text region.
-    ///
-    /// Typical range: 0.3 - 0.8
-    /// Default: 0.6 (merge if overlap ratio > 60%)
-    pub overlap_ratio_threshold: f32,
-
     /// Y-coordinate tolerance threshold for reading order sorting (in pixels)
     ///
     /// When sorting text detections by reading order, this threshold determines
@@ -130,9 +113,14 @@ pub struct PaddleDetConfig {
     ///
     /// This is crucial for proper reading order in multi-line text documents.
     ///
+    /// Represents the maximum difference in y-values for elements to be considered on the same line.
     /// Typical range: 3.0 - 15.0
-    /// Default: 5.0
+    /// Default: 10.0
     pub y_tolerance_threshold: f32,
+    /// Represents the maximum difference in x-values for elements to be considered for merging.
+    /// Typical range: 5.0 - 20.0
+    /// Default: 15.0
+    pub x_merge_threshold: f32,
 }
 
 impl Default for PaddleDetConfig {
@@ -148,8 +136,8 @@ impl Default for PaddleDetConfig {
             max_candidates: 1000,
             max_side_thresh: 3.0,
             text_padding: 6.0,
-            overlap_ratio_threshold: 0.6,
-            y_tolerance_threshold: 5.0,
+            y_tolerance_threshold: 10.0,
+            x_merge_threshold: 10.0,
         }
     }
 }

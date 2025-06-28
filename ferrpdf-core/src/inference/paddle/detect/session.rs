@@ -456,228 +456,47 @@ impl PaddleDetSession<PaddleDet> {
         if count > 0 { sum / count as f32 } else { 0.0 }
     }
 
-    /// Merge text boxes based on IoU threshold using the most efficient strategy.
-    /// - For n <= 2000, use sweep line (O(n log n)), which is fast and memory efficient.
-    /// - For n > 2000, use grid-based merging (O(n)~O(n log n)), suitable for massive bbox sets.
-    ///   You can easily switch or extend this logic as needed.
-    fn merge_bboxes(&self, detections: Vec<TextDetection>) -> Vec<TextDetection> {
-        let n = detections.len();
+    fn merge_bboxes(&self, detections: &mut Vec<TextDetection>) {
+        let len = detections.len();
+        if len < 2 {
+            return;
+        }
+
         let config = self.model.config();
-        let overlap_threshold = config.overlap_ratio_threshold;
+        let y_threshold = config.y_tolerance_threshold;
+        let x_threshold = config.x_merge_threshold;
 
-        // Auto-select the most efficient algorithm
-        if n > 2000 {
-            // For very large n, use grid-based merging
-            self.merge_bboxes_grid(detections, overlap_threshold)
-        } else {
-            // Default: improved sweep line with better overlap detection
-            self.merge_bboxes_improved(detections, overlap_threshold)
-        }
-    }
-
-    /// Improved bbox merging that can handle multiple bboxes merging into one large bbox
-    /// Uses a more robust approach that considers both horizontal and vertical overlaps
-    fn merge_bboxes_improved(
-        &self,
-        mut detections: Vec<TextDetection>,
-        overlap_threshold: f32,
-    ) -> Vec<TextDetection> {
-        if detections.len() <= 1 {
-            return detections;
-        }
-
-        // Sort by area (larger bboxes first) to prioritize merging into larger ones
-        detections.sort_by(|a, b| b.bbox.area().total_cmp(&a.bbox.area()));
-
-        let mut merged = Vec::new();
-        let mut used = vec![false; detections.len()];
-
-        // Process each detection starting from the largest
-        for i in 0..detections.len() {
-            if used[i] {
+        let mut removed = vec![false; len];
+        for i in 0..len {
+            if removed[i] {
                 continue;
             }
 
-            // Try to merge current bbox with all other unused bboxes
-            let (merged_bbox, max_proba) =
-                self.merge_with_all_overlapping(&detections, i, &mut used, overlap_threshold);
+            let mut new_bbox = detections[i].bbox;
+            let current_y = new_bbox.center_y();
 
-            merged.push(TextDetection {
-                bbox: merged_bbox,
-                proba: max_proba,
-            });
-        }
-
-        merged
-    }
-
-    /// Merge a bbox with all overlapping bboxes (not just active ones)
-    fn merge_with_all_overlapping(
-        &self,
-        detections: &[TextDetection],
-        start_idx: usize,
-        used: &mut [bool],
-        overlap_threshold: f32,
-    ) -> (Bbox, f32) {
-        let mut current_bbox = detections[start_idx].bbox;
-        let mut max_proba = detections[start_idx].proba;
-        used[start_idx] = true;
-
-        // Keep merging until no more overlaps are found
-        let mut changed = true;
-        while changed {
-            changed = false;
-
-            // Check all unused detections for overlaps
-            for (j, other) in detections.iter().enumerate() {
-                if used[j] {
-                    continue;
+            for j in (i + 1)..len {
+                let next_bbox = detections[j].bbox;
+                // not one line
+                if (next_bbox.center_y() - current_y).abs() > y_threshold {
+                    break;
                 }
 
-                let overlap_ratio = current_bbox.overlap_ratio(&other.bbox);
-
-                // Also check if the other bbox is mostly contained within current bbox
-                let other_area = other.bbox.area();
-                let intersection_area = current_bbox.intersection(&other.bbox);
-                let containment_ratio = intersection_area / other_area;
-
-                if overlap_ratio >= overlap_threshold || containment_ratio >= 0.5 {
-                    // Merge with this bbox
-                    current_bbox = current_bbox.union(&other.bbox);
-                    max_proba = max_proba.max(other.proba);
-                    used[j] = true;
-                    changed = true;
+                if next_bbox.min.x - new_bbox.max.x < x_threshold {
+                    new_bbox = new_bbox.union(&next_bbox);
+                    removed[j] = true;
                 }
             }
+
+            detections[i].bbox = new_bbox;
         }
 
-        (current_bbox, max_proba)
-    }
-
-    /// Alternative: Grid-based merging algorithm - O(n) average case
-    fn merge_bboxes_grid(
-        &self,
-        detections: Vec<TextDetection>,
-        overlap_threshold: f32,
-    ) -> Vec<TextDetection> {
-        if detections.is_empty() {
-            return detections;
-        }
-
-        // Calculate grid size based on typical bbox size
-        let grid_size = self.calculate_optimal_grid_size(&detections);
-
-        // Create spatial grid
-        let mut grid: std::collections::HashMap<(i32, i32), Vec<usize>> =
-            std::collections::HashMap::new();
-
-        // Assign detections to grid cells
-        for (idx, detection) in detections.iter().enumerate() {
-            let cells = self.get_bbox_grid_cells(&detection.bbox, grid_size);
-            for cell in cells {
-                grid.entry(cell).or_default();
-                grid.get_mut(&cell).unwrap().push(idx);
-            }
-        }
-
-        // Merge detections within each grid cell
-        let mut merged = Vec::new();
-        let mut used = vec![false; detections.len()];
-
-        for cell_detections in grid.values() {
-            if cell_detections.len() <= 1 {
-                continue;
-            }
-
-            // Merge detections in this cell
-            for &idx in cell_detections {
-                if used[idx] {
-                    continue;
-                }
-
-                let (merged_bbox, max_proba) = self.merge_detections_in_cell(
-                    &detections,
-                    idx,
-                    cell_detections,
-                    &mut used,
-                    overlap_threshold,
-                );
-
-                merged.push(TextDetection {
-                    bbox: merged_bbox,
-                    proba: max_proba,
-                });
-            }
-        }
-
-        // Add unmerged detections
-        for (idx, detection) in detections.iter().enumerate() {
-            if !used[idx] {
-                merged.push(detection.clone());
-            }
-        }
-
-        merged
-    }
-
-    /// Calculate optimal grid size based on bbox statistics
-    fn calculate_optimal_grid_size(&self, detections: &[TextDetection]) -> f32 {
-        if detections.is_empty() {
-            return 50.0; // Default grid size
-        }
-
-        // Calculate average bbox size
-        let total_width: f32 = detections.iter().map(|d| d.bbox.max.x - d.bbox.min.x).sum();
-        let total_height: f32 = detections.iter().map(|d| d.bbox.max.y - d.bbox.min.y).sum();
-        let avg_size = (total_width + total_height) / (2.0 * detections.len() as f32);
-
-        // Grid size should be 2-3 times the average bbox size
-        (avg_size * 2.5).clamp(20.0, 100.0)
-    }
-
-    /// Get grid cells that a bbox overlaps with
-    fn get_bbox_grid_cells(&self, bbox: &Bbox, grid_size: f32) -> Vec<(i32, i32)> {
-        let min_x = (bbox.min.x / grid_size).floor() as i32;
-        let max_x = (bbox.max.x / grid_size).floor() as i32;
-        let min_y = (bbox.min.y / grid_size).floor() as i32;
-        let max_y = (bbox.max.y / grid_size).floor() as i32;
-
-        let mut cells = Vec::new();
-        for x in min_x..=max_x {
-            for y in min_y..=max_y {
-                cells.push((x, y));
-            }
-        }
-        cells
-    }
-
-    /// Merge detections within a grid cell
-    fn merge_detections_in_cell(
-        &self,
-        detections: &[TextDetection],
-        start_idx: usize,
-        cell_indices: &[usize],
-        used: &mut [bool],
-        overlap_threshold: f32,
-    ) -> (Bbox, f32) {
-        let mut current_bbox = detections[start_idx].bbox;
-        let mut max_proba = detections[start_idx].proba;
-        used[start_idx] = true;
-
-        for &idx in cell_indices {
-            if used[idx] || idx == start_idx {
-                continue;
-            }
-
-            let overlap_ratio = current_bbox.overlap_ratio(&detections[idx].bbox);
-            if overlap_ratio >= overlap_threshold {
-                current_bbox = current_bbox.union(&detections[idx].bbox);
-                max_proba = max_proba.max(detections[idx].proba);
-                used[idx] = true;
-            }
-        }
-
-        (current_bbox, max_proba)
+        let mut index = 0;
+        detections.retain(|_| {
+            let result = !removed[index];
+            index += 1;
+            result
+        });
     }
 
     #[tracing::instrument(skip_all)]
@@ -728,20 +547,14 @@ impl PaddleDetSession<PaddleDet> {
         let config = self.model.config();
         let y_tolerance_threshold = config.y_tolerance_threshold;
 
-        // fix: user-provided comparison function does not correctly implement a total order
         detections.sort_unstable_by(|a, b| {
             let a_center = a.bbox.center();
             let b_center = b.bbox.center();
 
-            let y_category_a = (a_center.y / y_tolerance_threshold).floor() as i32;
-            let y_category_b = (b_center.y / y_tolerance_threshold).floor() as i32;
-
-            match y_category_a.cmp(&y_category_b) {
-                std::cmp::Ordering::Equal => match a_center.x.partial_cmp(&b_center.x) {
-                    Some(ordering) => ordering,
-                    None => std::cmp::Ordering::Equal,
-                },
-                ordering => ordering,
+            if (a_center.y - b_center.y).abs() < y_tolerance_threshold {
+                a_center.x.total_cmp(&b_center.x)
+            } else {
+                a_center.y.total_cmp(&b_center.y)
             }
         });
     }
@@ -806,10 +619,10 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
     ) -> Result<Self::Output, FerrpdfError> {
         // extra bbox
         let mut detections = self.extra_bbox(&output, &extra);
-        // merge bbox
-        detections = self.merge_bboxes(detections);
         // sort bbox
         self.sort_by_reading_order(&mut detections);
+        // merge bbox
+        self.merge_bboxes(&mut detections);
         Ok(detections)
     }
 
@@ -1097,7 +910,6 @@ mod tests {
 
         // Test custom configuration
         let config = PaddleDetConfig {
-            overlap_ratio_threshold: 0.7, // 70% IoU threshold
             ..PaddleDetConfig::default()
         };
 
@@ -1105,7 +917,6 @@ mod tests {
         assert_eq!(config.text_padding, 6.0);
         assert_eq!(config.det_db_thresh, 0.3);
         assert_eq!(config.det_db_box_thresh, 0.6);
-        assert_eq!(config.overlap_ratio_threshold, 0.7);
     }
 
     #[test]
@@ -1157,57 +968,6 @@ mod tests {
         assert!((bbox.max.x - expected_max_x).abs() < 0.1);
         assert!((bbox.max.y - expected_max_y).abs() < 0.1);
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_overlapping_bbox_removal() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::inference::paddle::detect::model::PaddleDet;
-        use crate::inference::paddle::detect::model::PaddleDetConfig;
-
-        let session_builder = Session::builder()?
-            .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
-            .with_optimization_level(GraphOptimizationLevel::Level1)?;
-
-        let config = PaddleDetConfig {
-            overlap_ratio_threshold: 0.3, // Lower threshold to ensure overlapping detection
-            ..PaddleDetConfig::default()
-        };
-        let model = PaddleDet::with_config(config);
-        let session = PaddleDetSession::new(session_builder, model)?;
-
-        // Create overlapping detections
-        let detections = vec![
-            TextDetection {
-                bbox: Bbox::new(glam::Vec2::new(10.0, 20.0), glam::Vec2::new(100.0, 40.0)), // Higher confidence
-                proba: 0.9,
-            },
-            TextDetection {
-                bbox: Bbox::new(glam::Vec2::new(50.0, 25.0), glam::Vec2::new(150.0, 45.0)), // Overlapping, lower confidence
-                proba: 0.7,
-            },
-            TextDetection {
-                bbox: Bbox::new(glam::Vec2::new(200.0, 20.0), glam::Vec2::new(300.0, 40.0)), // Non-overlapping
-                proba: 0.8,
-            },
-        ];
-
-        let result = session.merge_bboxes(detections);
-
-        // Should have 2 non-overlapping detections
-        assert_eq!(result.len(), 2);
-
-        // First should be the highest confidence one
-        assert_eq!(result[0].proba, 0.9);
-        assert_eq!(result[0].bbox.min.x, 10.0);
-        assert_eq!(result[0].bbox.max.x, 150.0); // Merged with overlapping box
-
-        // Second should be the non-overlapping one
-        assert_eq!(result[1].proba, 0.8);
-        assert_eq!(result[1].bbox.min.x, 200.0);
-        assert_eq!(result[1].bbox.max.x, 300.0);
-
-        println!("Overlapping bbox removal test passed");
         Ok(())
     }
 
