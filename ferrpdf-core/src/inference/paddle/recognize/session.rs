@@ -4,6 +4,7 @@ use ort::session::{RunOptions, Session, builder::SessionBuilder};
 use ort::value::TensorRef;
 use snafu::{OptionExt, ResultExt};
 
+use crate::consts::*;
 use crate::{
     analysis::bbox::Bbox,
     error::*,
@@ -177,11 +178,6 @@ impl OnnxSession<PaddleRec> for PaddleRecSession<PaddleRec> {
             src_resize.width() as _,
         ]);
 
-        // Pre-calculate normalization constants for performance
-        // Original: (r/255.0 - 0.5) / 0.5 = r/127.5 - 1.0
-        const NORMALIZATION_SCALE: f32 = 1.0 / 127.5; // 1.0 / 127.5 = 0.007843137
-        const NORMALIZATION_OFFSET: f32 = -1.0;
-
         // Fill tensor with normalized pixel values
         for (x, y, pixel) in src_resize.enumerate_pixels() {
             let x = x as usize;
@@ -189,9 +185,9 @@ impl OnnxSession<PaddleRec> for PaddleRecSession<PaddleRec> {
             let [r, g, b] = pixel.0;
 
             // Optimized normalization: r * NORMALIZATION_SCALE + NORMALIZATION_OFFSET
-            input_tensor[[0, 0, y, x]] = r as f32 * NORMALIZATION_SCALE + NORMALIZATION_OFFSET;
-            input_tensor[[0, 1, y, x]] = g as f32 * NORMALIZATION_SCALE + NORMALIZATION_OFFSET;
-            input_tensor[[0, 2, y, x]] = b as f32 * NORMALIZATION_SCALE + NORMALIZATION_OFFSET;
+            input_tensor[[0, 0, y, x]] = r as f32 * NORMALIZATION_SCALE - 1.0;
+            input_tensor[[0, 1, y, x]] = g as f32 * NORMALIZATION_SCALE - 1.0;
+            input_tensor[[0, 2, y, x]] = b as f32 * NORMALIZATION_SCALE - 1.0;
         }
 
         Ok(input_tensor)

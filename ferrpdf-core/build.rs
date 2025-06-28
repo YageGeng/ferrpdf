@@ -91,8 +91,7 @@ fn get_pdfium_binary() -> Result<PdfiumBinary, String> {
             arch: "simulator-x64".to_string(),
         }),
         _ => Err(format!(
-            "Unsupported platform: {} on {}",
-            target_os, target_arch
+            "Unsupported platform: {target_os} on {target_arch}"
         )),
     }
 }
@@ -100,7 +99,7 @@ fn get_pdfium_binary() -> Result<PdfiumBinary, String> {
 fn create_build_directories(out_dir: &Path) -> Result<PathBuf, String> {
     let pdfium_dir = out_dir.join("pdfium");
     fs::create_dir_all(&pdfium_dir)
-        .map_err(|e| format!("Failed to create pdfium directory: {}", e))?;
+        .map_err(|e| format!("Failed to create pdfium directory: {e}"))?;
     Ok(pdfium_dir)
 }
 
@@ -112,7 +111,7 @@ fn download_pdfium_binary(binary_info: &PdfiumBinary, tgz_path: &PathBuf) -> Res
     );
 
     let response = reqwest::blocking::get(&url)
-        .map_err(|e| format!("Failed to download pdfium library: {}", e))?;
+        .map_err(|e| format!("Failed to download pdfium library: {e}"))?;
 
     if !response.status().is_success() {
         return Err(format!(
@@ -124,9 +123,9 @@ fn download_pdfium_binary(binary_info: &PdfiumBinary, tgz_path: &PathBuf) -> Res
 
     let bytes = response
         .bytes()
-        .map_err(|e| format!("Failed to get response bytes: {}", e))?;
+        .map_err(|e| format!("Failed to get response bytes: {e}"))?;
     fs::write(tgz_path, &bytes)
-        .map_err(|e| format!("Failed to write pdfium archive to file: {}", e))?;
+        .map_err(|e| format!("Failed to write pdfium archive to file: {e}"))?;
 
     println!("Downloaded PDFium binary successfully.");
     Ok(())
@@ -134,13 +133,13 @@ fn download_pdfium_binary(binary_info: &PdfiumBinary, tgz_path: &PathBuf) -> Res
 
 fn extract_pdfium_archive(tgz_path: &PathBuf, pdfium_dir: &PathBuf) -> Result<(), String> {
     println!("Extracting PDFium archive...");
-    let tar_gz = File::open(tgz_path).map_err(|e| format!("Failed to open tarball file: {}", e))?;
+    let tar_gz = File::open(tgz_path).map_err(|e| format!("Failed to open tarball file: {e}"))?;
     let tar = GzDecoder::new(tar_gz);
     let mut archive = Archive::new(tar);
 
     archive
         .unpack(pdfium_dir)
-        .map_err(|e| format!("Failed to extract pdfium library: {}", e))?;
+        .map_err(|e| format!("Failed to extract pdfium library: {e}"))?;
 
     println!("Extraction completed.");
     Ok(())
@@ -149,7 +148,7 @@ fn extract_pdfium_archive(tgz_path: &PathBuf, pdfium_dir: &PathBuf) -> Result<()
 fn get_workspace_dir() -> Result<PathBuf, String> {
     let workspace_dir = PathBuf::from(
         env::var("CARGO_MANIFEST_DIR")
-            .map_err(|e| format!("Failed to get CARGO_MANIFEST_DIR: {}", e))?,
+            .map_err(|e| format!("Failed to get CARGO_MANIFEST_DIR: {e}"))?,
     );
     workspace_dir
         .parent()
@@ -169,7 +168,7 @@ fn move_to_workspace_lib(pdfium_dir: &Path) -> Result<(), String> {
 
     fs::remove_dir_all(&workspace_lib_dir).ok();
     fs::rename(lib_path, workspace_lib_dir)
-        .map_err(|e| format!("Failed to move library to workspace: {}", e))?;
+        .map_err(|e| format!("Failed to move library to workspace: {e}"))?;
 
     println!("Library moved successfully.");
     Ok(())

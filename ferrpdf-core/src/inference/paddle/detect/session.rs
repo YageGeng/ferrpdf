@@ -1,7 +1,8 @@
 use derive_builder::Builder;
+use glam::{IVec2, Vec2};
 use image::Rgb;
 use image::{DynamicImage, GenericImageView, imageops::FilterType};
-use imageproc::{drawing::draw_hollow_rect_mut, rect::Rect};
+use imageproc::*;
 use ndarray::prelude::*;
 use ort::session::RunOptions;
 use ort::session::{Session, builder::SessionBuilder};
@@ -218,17 +219,24 @@ impl PaddleDetSession<PaddleDet> {
     }
 
     /// Post-process detection results using DB (Differentiable Binarization) algorithm
-    fn db_postprocess(&self, pred: &Array3<f32>, extra: &DetExtra) -> Vec<TextDetection> {
+    fn extra_bbox(&self, pred: &Array3<f32>, extra: &DetExtra) -> Vec<TextDetection> {
         let config = self.model.config();
 
         // 1. Extract and prepare probability map
         let (pred_img, cbuf_img) = self.extract_probability_maps(pred);
 
         // 2. Apply thresholding and morphological operations
-        let dilated_img = self.apply_threshold_and_dilation(&cbuf_img, config.det_db_box_thresh);
+        let threshold_img = contrast::threshold(
+            &cbuf_img,
+            (config.det_db_box_thresh * 255.0) as u8,
+            contrast::ThresholdType::Binary,
+        );
+
+        // Apply dilation to connect nearby text regions
+        let dilated_img = morphology::dilate(&threshold_img, distance_transform::Norm::LInf, 1);
 
         // 3. Find contours in the processed image
-        let contours = self.find_text_contours(&dilated_img);
+        let contours = contours::find_contours(&dilated_img);
 
         // 4. Process each contour to extract text detections
         let mut detections = Vec::new();
@@ -269,41 +277,10 @@ impl PaddleDetSession<PaddleDet> {
         (pred_img, cbuf_img)
     }
 
-    /// Apply thresholding and dilation operations
-    fn apply_threshold_and_dilation(
-        &self,
-        cbuf_img: &image::GrayImage,
-        box_thresh: f32,
-    ) -> image::GrayImage {
-        use imageproc::contrast::threshold;
-        use imageproc::distance_transform::Norm;
-        use imageproc::morphology::dilate;
-
-        // Apply binary thresholding
-        let threshold_img = threshold(
-            cbuf_img,
-            (box_thresh * 255.0) as u8,
-            imageproc::contrast::ThresholdType::Binary,
-        );
-
-        // Apply dilation to connect nearby text regions
-        dilate(&threshold_img, Norm::LInf, 1)
-    }
-
-    /// Find text contours in the processed image
-    fn find_text_contours(
-        &self,
-        dilated_img: &image::GrayImage,
-    ) -> Vec<imageproc::contours::Contour<i32>> {
-        use imageproc::contours::find_contours;
-
-        find_contours(dilated_img)
-    }
-
     /// Process a single contour to extract text detection
     fn process_contour_to_detection(
         &self,
-        contour: &imageproc::contours::Contour<i32>,
+        contour: &contours::Contour<i32>,
         pred_img: &image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
         extra: &DetExtra,
         config: &<PaddleDet as Model>::Config,
@@ -327,7 +304,10 @@ impl PaddleDetSession<PaddleDet> {
         }
 
         // Apply unclip operation
-        let clip_box = self.unclip(&min_box);
+        let clip_box = min_box
+            .iter()
+            .map(|p| point::Point::new(p.x as i32, p.y as i32))
+            .collect::<Vec<_>>();
         if clip_box.is_empty() {
             return None;
         }
@@ -346,108 +326,56 @@ impl PaddleDetSession<PaddleDet> {
     }
 
     // Convert contour points to bounding box
-    fn points_to_bbox(&self, points: &[imageproc::point::Point<f32>], extra: &DetExtra) -> Bbox {
+    fn points_to_bbox(&self, points: &[point::Point<f32>], extra: &DetExtra) -> Bbox {
         if points.is_empty() {
             return Bbox::new(glam::Vec2::ZERO, glam::Vec2::ZERO);
         }
 
-        // Calculate bounding box from points
-        let (min_x, min_y, max_x, max_y) = self.calculate_points_bounds(points);
+        // Initialize with first point
+        let mut min = Vec2::MAX;
+        let mut max = Vec2::MIN;
 
-        // Scale coordinates to original image space
-        let (min, max) = self.scale_coordinates_to_original(min_x, min_y, max_x, max_y, extra);
-
-        // Apply text padding
-        self.apply_text_padding(min, max, extra)
-    }
-
-    /// Calculate bounding box from contour points
-    fn calculate_points_bounds(
-        &self,
-        points: &[imageproc::point::Point<f32>],
-    ) -> (f32, f32, f32, f32) {
-        let mut min_x = f32::MAX;
-        let mut min_y = f32::MAX;
-        let mut max_x = f32::MIN;
-        let mut max_y = f32::MIN;
-
-        for point in points {
-            min_x = min_x.min(point.x);
-            min_y = min_y.min(point.y);
-            max_x = max_x.max(point.x);
-            max_y = max_y.max(point.y);
+        // Calculate bounds in single pass
+        for point in points.iter() {
+            min = min.min(glam::Vec2::new(point.x, point.y));
+            max = max.max(glam::Vec2::new(point.x, point.y));
         }
 
-        (min_x, min_y, max_x, max_y)
-    }
-
-    /// Scale coordinates from resized to original image space
-    fn scale_coordinates_to_original(
-        &self,
-        min_x: f32,
-        min_y: f32,
-        max_x: f32,
-        max_y: f32,
-        extra: &DetExtra,
-    ) -> (glam::Vec2, glam::Vec2) {
-        let scale_x = extra.original_shape.0 as f32 / extra.resized_shape.0 as f32;
-        let scale_y = extra.original_shape.1 as f32 / extra.resized_shape.1 as f32;
-
-        let min = glam::Vec2::new(min_x * scale_x, min_y * scale_y);
-        let max = glam::Vec2::new(max_x * scale_x, max_y * scale_y);
-
-        (min, max)
-    }
-
-    /// Apply text padding to bounding box
-    fn apply_text_padding(&self, min: glam::Vec2, max: glam::Vec2, extra: &DetExtra) -> Bbox {
-        let config = self.model.config();
-        let padding = config.text_padding;
-
-        let padded_min = glam::Vec2::new((min.x - padding).max(0.0), (min.y - padding).max(0.0));
-        let padded_max = glam::Vec2::new(
-            (max.x + padding).min(extra.original_shape.0 as f32),
-            (max.y + padding).min(extra.original_shape.1 as f32),
+        // Scale coordinates
+        let scale = glam::Vec2::new(
+            extra.original_shape.0 as f32 / extra.resized_shape.0 as f32,
+            extra.original_shape.1 as f32 / extra.resized_shape.1 as f32,
         );
+        min *= scale;
+        max *= scale;
 
-        Bbox::new(padded_min, padded_max)
+        // Apply padding with bounds checking
+        let padding = self.model.config().text_padding;
+        Bbox::new(
+            (min - padding).max(glam::Vec2::ZERO),
+            (max + padding).min(glam::Vec2::new(
+                extra.original_shape.0 as f32,
+                extra.original_shape.1 as f32,
+            )),
+        )
     }
 
     // Minimum bounding rectangle
     fn get_mini_box(
         &self,
-        points: &[imageproc::point::Point<i32>],
+        points: &[point::Point<i32>],
         min_edge_size: &mut f32,
-    ) -> Vec<imageproc::point::Point<f32>> {
-        use imageproc::geometry::min_area_rect;
-
+    ) -> Vec<point::Point<f32>> {
         // Get minimum area rectangle
-        let rect = min_area_rect(points);
+        let rect = geometry::min_area_rect(points);
 
-        // Convert to float points and calculate dimensions
-        let rect_points = self.convert_rect_to_float_points(&rect);
-        let (width, height) = self.calculate_rect_dimensions(&rect_points);
-        *min_edge_size = width.min(height);
+        // Convert integer rectangle points to float points
+        let rect_points: Vec<point::Point<f32>> = rect
+            .iter()
+            .map(|p| point::Point::new(p.x as f32, p.y as f32))
+            .collect();
 
-        // Sort and reorder points for consistent output
-        self.sort_and_reorder_rect_points(rect_points)
-    }
-
-    /// Convert integer rectangle points to float points
-    fn convert_rect_to_float_points(
-        &self,
-        rect: &[imageproc::point::Point<i32>],
-    ) -> Vec<imageproc::point::Point<f32>> {
-        rect.iter()
-            .map(|p| imageproc::point::Point::new(p.x as f32, p.y as f32))
-            .collect()
-    }
-
-    /// Calculate width and height of rectangle
-    fn calculate_rect_dimensions(
-        &self,
-        rect_points: &[imageproc::point::Point<f32>],
-    ) -> (f32, f32) {
+        // Calculate width and height of rectangle
         let width = ((rect_points[0].x - rect_points[1].x).powi(2)
             + (rect_points[0].y - rect_points[1].y).powi(2))
         .sqrt();
@@ -455,190 +383,77 @@ impl PaddleDetSession<PaddleDet> {
             + (rect_points[1].y - rect_points[2].y).powi(2))
         .sqrt();
 
-        (width, height)
-    }
+        *min_edge_size = width.min(height);
 
-    /// Sort and reorder rectangle points for consistent output
-    fn sort_and_reorder_rect_points(
-        &self,
-        mut rect_points: Vec<imageproc::point::Point<f32>>,
-    ) -> Vec<imageproc::point::Point<f32>> {
-        use std::cmp::Ordering;
+        // Directly reorder points based on coordinates
+        let mut reordered_points = rect_points.clone();
+        reordered_points.sort_by(|a, b| a.x.total_cmp(&b.x).then_with(|| a.y.total_cmp(&b.y)));
 
-        // Sort by x-coordinate
-        rect_points.sort_by(|a, b| {
-            if a.x > b.x {
-                return Ordering::Greater;
-            }
-            if a.x == b.x {
-                return Ordering::Equal;
-            }
-            Ordering::Less
-        });
-
-        // Determine indices for reordering
-        let (index_1, index_4) = if rect_points[1].y > rect_points[0].y {
-            (0, 1)
-        } else {
-            (1, 0)
-        };
-
-        let (index_2, index_3) = if rect_points[3].y > rect_points[2].y {
-            (2, 3)
-        } else {
-            (3, 2)
-        };
-
-        // Reorder points
         vec![
-            rect_points[index_1],
-            rect_points[index_2],
-            rect_points[index_3],
-            rect_points[index_4],
+            reordered_points[0],
+            reordered_points[1],
+            reordered_points[2],
+            reordered_points[3],
         ]
     }
 
     // Calculate score
     fn get_score(
         &self,
-        contour: &imageproc::contours::Contour<i32>,
+        contour: &contours::Contour<i32>,
         f_map_mat: &image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
     ) -> f32 {
-        // Get bounding box of contour
-        let (xmin, xmax, ymin, ymax) = self.get_contour_bounds(contour, f_map_mat);
-
-        // Calculate ROI dimensions
-        let roi_width = xmax - xmin + 1;
-        let roi_height = ymax - ymin + 1;
-
-        if roi_width <= 0 || roi_height <= 0 {
+        // Early return for empty contours
+        if contour.points.is_empty() {
             return 0.0;
         }
 
-        // Create mask for the contour region
-        let mask = self.create_contour_mask(contour, xmin, ymin, roi_width, roi_height);
+        // Calculate bounds using Vec2
+        let mut min = IVec2::MAX;
+        let mut max = IVec2::MIN;
 
-        // Crop the probability map to ROI
-        let cropped_img = self.crop_probability_map(f_map_mat, xmin, ymin, roi_width, roi_height);
-
-        // Calculate mean score within the contour
-        self.calculate_mean_score(&cropped_img, &mask)
-    }
-
-    /// Get bounding box of contour with bounds checking
-    fn get_contour_bounds(
-        &self,
-        contour: &imageproc::contours::Contour<i32>,
-        f_map_mat: &image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
-    ) -> (i32, i32, i32, i32) {
-        // Initialize boundary values
-        let mut xmin = i32::MAX;
-        let mut xmax = i32::MIN;
-        let mut ymin = i32::MAX;
-        let mut ymax = i32::MIN;
-
-        // Find bounding box of contour
-        for point in contour.points.iter() {
-            xmin = xmin.min(point.x);
-            xmax = xmax.max(point.x);
-            ymin = ymin.min(point.y);
-            ymax = ymax.max(point.y);
+        for point in &contour.points {
+            min = min.min(IVec2::new(point.x, point.y));
+            max = max.max(IVec2::new(point.x, point.y));
         }
 
-        let width = f_map_mat.width() as i32;
-        let height = f_map_mat.height() as i32;
+        // Clamp to image dimensions
+        let max_point = IVec2::new(f_map_mat.width() as i32 - 1, f_map_mat.height() as i32 - 1);
+        let min = min.clamp(IVec2::ZERO, max_point);
+        let max = max.clamp(IVec2::ZERO, max_point);
 
-        // Create a Bbox and use its clamp method for consistency
-        let bbox = Bbox::new(
-            glam::Vec2::new(xmin as f32, ymin as f32),
-            glam::Vec2::new(xmax as f32, ymax as f32),
-        );
+        let xmin = min.x;
+        let ymin = min.y;
 
-        let clamped_bbox = bbox.clamp(
-            glam::Vec2::ZERO,
-            glam::Vec2::new((width - 1) as f32, (height - 1) as f32),
-        );
+        let roi_width = (max.x - min.x + 1) as u32;
+        let roi_height = (max.y - min.y + 1) as u32;
 
-        (
-            clamped_bbox.min.x as i32,
-            clamped_bbox.max.x as i32,
-            clamped_bbox.min.y as i32,
-            clamped_bbox.max.y as i32,
-        )
-    }
+        // Early return for invalid regions
+        if roi_width == 0 || roi_height == 0 {
+            return 0.0;
+        }
 
-    /// Create binary mask for contour region
-    fn create_contour_mask(
-        &self,
-        contour: &imageproc::contours::Contour<i32>,
-        xmin: i32,
-        ymin: i32,
-        roi_width: i32,
-        roi_height: i32,
-    ) -> image::GrayImage {
-        let mut mask = image::GrayImage::new(roi_width as u32, roi_height as u32);
-
-        // Translate contour points to ROI coordinates
-        let pts: Vec<imageproc::point::Point<i32>> = contour
+        // Generate mask directly in ROI coordinates
+        let mut mask = image::GrayImage::new(roi_width, roi_height);
+        let translated_points: Vec<_> = contour
             .points
             .iter()
-            .map(|p| imageproc::point::Point::new(p.x - xmin, p.y - ymin))
+            .map(|p| point::Point::new(p.x - xmin, p.y - ymin))
             .collect();
+        drawing::draw_polygon_mut(&mut mask, &translated_points, image::Luma([255]));
 
-        // Draw polygon mask
-        imageproc::drawing::draw_polygon_mut(&mut mask, pts.as_slice(), image::Luma([255]));
+        // Crop probability map and calculate mean score
+        let cropped_img =
+            image::imageops::crop_imm(f_map_mat, xmin as u32, ymin as u32, roi_width, roi_height)
+                .to_image();
+        let (sum, count) = cropped_img
+            .enumerate_pixels()
+            .filter(|(x, y, _)| mask.get_pixel(*x, *y)[0] > 0)
+            .fold((0.0, 0), |(sum, count), (_, _, pixel)| {
+                (sum + pixel[0], count + 1)
+            });
 
-        mask
-    }
-
-    /// Crop probability map to ROI region
-    fn crop_probability_map(
-        &self,
-        f_map_mat: &image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
-        xmin: i32,
-        ymin: i32,
-        roi_width: i32,
-        roi_height: i32,
-    ) -> image::ImageBuffer<image::Luma<f32>, Vec<f32>> {
-        image::imageops::crop_imm(
-            f_map_mat,
-            xmin as u32,
-            ymin as u32,
-            roi_width as u32,
-            roi_height as u32,
-        )
-        .to_image()
-    }
-
-    /// Calculate mean score within the contour mask
-    fn calculate_mean_score(
-        &self,
-        cropped_img: &image::ImageBuffer<image::Luma<f32>, Vec<f32>>,
-        mask: &image::GrayImage,
-    ) -> f32 {
-        let mut sum = 0.0;
-        let mut count = 0;
-
-        for (x, y, pixel) in cropped_img.enumerate_pixels() {
-            if mask.get_pixel(x, y)[0] > 0 {
-                sum += pixel[0];
-                count += 1;
-            }
-        }
-
-        if count == 0 { 0.0 } else { sum / count as f32 }
-    }
-
-    // Unclip - simplified version without geo-clipper dependency
-    fn unclip(
-        &self,
-        box_points: &[imageproc::point::Point<f32>],
-    ) -> Vec<imageproc::point::Point<i32>> {
-        // Simplified implementation - return original points as integers
-        box_points
-            .iter()
-            .map(|p| imageproc::point::Point::new(p.x as i32, p.y as i32))
-            .collect()
+        if count > 0 { sum / count as f32 } else { 0.0 }
     }
 
     /// Merge text boxes based on IoU threshold using the most efficient strategy.
@@ -890,9 +705,9 @@ impl PaddleDetSession<PaddleDet> {
 
             // Draw multiple rectangles to create thicker lines
             for offset in 0..3 {
-                let thick_rect = Rect::at(x - offset, y - offset)
+                let thick_rect = rect::Rect::at(x - offset, y - offset)
                     .of_size(width + (offset * 2) as u32, height + (offset * 2) as u32);
-                draw_hollow_rect_mut(&mut output_img, thick_rect, color);
+                drawing::draw_hollow_rect_mut(&mut output_img, thick_rect, color);
             }
         }
 
@@ -989,9 +804,11 @@ impl OnnxSession<PaddleDet> for PaddleDetSession<PaddleDet> {
         output: <PaddleDet as Model>::Output,
         extra: Self::Extra,
     ) -> Result<Self::Output, FerrpdfError> {
-        let mut detections = self.db_postprocess(&output, &extra);
-        // merge
+        // extra bbox
+        let mut detections = self.extra_bbox(&output, &extra);
+        // merge bbox
         detections = self.merge_bboxes(detections);
+        // sort bbox
         self.sort_by_reading_order(&mut detections);
         Ok(detections)
     }
@@ -1210,10 +1027,10 @@ mod tests {
         assert!(image_bbox.max.x >= image_bbox.min.x && image_bbox.max.x <= image_size.x);
         assert!(image_bbox.max.y >= image_bbox.min.y && image_bbox.max.y <= image_size.y);
 
-        println!("PDF bbox: {:?}", pdf_bbox);
-        println!("Image bbox: {:?}", image_bbox);
-        println!("Back to PDF: {:?}", back_to_pdf);
-        println!("Scale factor: {:.3}", pdf_to_image_scale);
+        println!("PDF bbox: {pdf_bbox:?}");
+        println!("Image bbox: {image_bbox:?}");
+        println!("Back to PDF: {back_to_pdf:?}");
+        println!("Scale factor: {pdf_to_image_scale:.3}");
     }
 
     #[test]
@@ -1317,10 +1134,10 @@ mod tests {
 
         // Create test points that would result in a bbox at (100, 100) to (200, 150)
         let test_points = vec![
-            imageproc::point::Point::new(100.0, 100.0),
-            imageproc::point::Point::new(200.0, 100.0),
-            imageproc::point::Point::new(200.0, 150.0),
-            imageproc::point::Point::new(100.0, 150.0),
+            point::Point::new(100.0, 100.0),
+            point::Point::new(200.0, 100.0),
+            point::Point::new(200.0, 150.0),
+            point::Point::new(100.0, 150.0),
         ];
 
         let bbox = session.points_to_bbox(&test_points, &extra);
