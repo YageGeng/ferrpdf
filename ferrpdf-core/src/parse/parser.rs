@@ -525,6 +525,10 @@ impl PdfParser {
     }
 }
 
+impl Drop for PdfParser {
+    fn drop(&mut self) {}
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

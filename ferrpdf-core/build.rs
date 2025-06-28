@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use tar::Archive;
 
 const PDFIUM_BASE_URL: &str =
-    "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/6721";
+    "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7256";
 
 struct PdfiumBinary {
     filename: String,
