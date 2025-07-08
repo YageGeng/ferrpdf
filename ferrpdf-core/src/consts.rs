@@ -43,7 +43,7 @@ pub const OUTPUT_SIZE: [usize; 3] = [1, LABEL_PROBA_SIZE, 21504];
 /// This threshold can be adjusted based on the specific use case:
 /// - Lower values (0.1-0.15): More sensitive, may include more false positives
 /// - Higher values (0.3-0.5): More conservative, may miss some true detections
-pub const PROBA_THRESHOLD: f32 = 0.2;
+pub const PROBA_THRESHOLD: f32 = 0.1;
 
 pub const YOLOV12_INPUT_IMAGE_WIDTH: usize = 1024;
 pub const YOLOV12_INPUT_IMAGE_HEIGHT: usize = 1024;
