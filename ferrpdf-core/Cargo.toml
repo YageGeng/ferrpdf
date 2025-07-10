@@ -9,6 +9,7 @@ path = "src/bin/analyze.rs"
 
 [dependencies]
 ab_glyph = "0.2"
+async-trait = "0.1"
 bytes = { version = "1" }
 clap = { version = "4.5", features = ["derive"] }
 derive_builder = "0.20.2"
